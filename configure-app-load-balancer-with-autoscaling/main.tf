@@ -37,15 +37,15 @@ resource "google_compute_firewall" "fw-allow-health-checks" {
 # -----------------------------------------------
 
 module "nat-config" {
-  source = "terraform-google-modules/cloud-nat/google"
+  source  = "terraform-google-modules/cloud-nat/google"
   version = "7.0.0"
 
   project_id = var.project_id
-  region = var.compute_region
-  router = "nat-router-us1"
+  region     = var.compute_region
+  router     = "nat-router-us1"
 
-  name = "nat-config" 
-  network = "default"
+  name          = "nat-config"
+  network       = "default"
   create_router = true
 }
 
@@ -56,11 +56,11 @@ module "nat-config" {
 # Create a webserver instance
 # Comment out (delete) after creating image
 resource "google_compute_instance" "webserver" {
-  name         = "webserver"
-  zone         = var.compute_zone
-  machine_type = "e2-micro"
-  tags         = ["allow-health-checks"]
-  desired_state = "TERMINATED"
+  name           = "webserver"
+  zone           = var.compute_zone
+  machine_type   = "e2-micro"
+  tags           = ["allow-health-checks"]
+  desired_status = "TERMINATED"
 
   boot_disk {
     auto_delete = false # Persists disk if instance deleted
@@ -88,8 +88,8 @@ resource "google_compute_instance" "webserver" {
 # -----------------------------------------------
 # Create custom image from webserver disk
 resource "google_compute_image" "mywebserver" {
-  name            = "mywebserver"
-  source_disk = google_compute_instance.webserver.name
+  name        = "mywebserver"
+  source_disk = google_compute_instance.webserver.boot_disk[0].source
 
 }
 
@@ -113,108 +113,100 @@ resource "google_compute_instance_template" "mywebserver-template" {
   }
 }
 
-module "us-1-mig" {
-  source  = "terraform-google-modules/vm/google//modules/mig"
-  version = "15.2.1"
+resource "google_compute_health_check" "http-health-check" {
+  name = "http-health-check"
 
-  instance_template = google_compute_instance_template.mywebserver-template.self_link
-  project_id        = var.project_id
-  region            = var.compute_region
-
-  mig_name     = "us-1-mig"
-  min_replicas = 1
-  max_replicas = 2
-  autoscaling_cpu = [
-    {
-      target            = 80
-      predictive_method = "NONE"
-    }
-  ]
-  autoscaling_enabled = true
-  cooldown_period     = 60
-
-  health_check_name = "http-health-check"
-  health_check      = { 
-    check_interval_sec : 30,
-    enable_logging: false,
-    healthy_threshold: 1,
-    host: "",
-    initial_delay_sec: 60,
-    port: 80,
-    proxy_header: "NONE",
-    request: "",
-    request_path: "/"
-    response: "",
-    timeout_sec: 10
-    type: "http",
-    unhealthy_threshold: 5
+  http_health_check {
+    port = 80
   }
 }
 
-module "notus-1-mig" {
-  source  = "terraform-google-modules/vm/google//modules/mig"
-  version = "15.2.1"
+module "mig-us" {
+  source = "./modules/mig"
 
-  instance_template = google_compute_instance_template.mywebserver-template.self_link
-  project_id        = var.project_id
-  region            = var.compute_region_2
+  base_instance_name    = "us-1-mig"
+  instance_group_name   = "us-1-mig"
+  instance_group_region = var.compute_region
+  instance_template     = google_compute_instance_template.mywebserver-template.self_link_unique
+  health_check          = google_compute_health_check.http-health-check.self_link
+}
 
-  mig_name            = "notus-1-mig"
-  min_replicas        = 1
-  max_replicas        = 2
-  autoscaling_cpu     = [
-    { 
-      target = 80
-      predictive_method = "NONE"
-    }
-  ]
-  autoscaling_enabled = true
-  cooldown_period     = 60
+module "mig-notus" {
+  source = "./modules/mig"
 
-  health_check_name = "http-health-check"
-  health_check      = { 
-    check_interval_sec : 30,
-    enable_logging: false,
-    healthy_threshold: 1,
-    host: "",
-    initial_delay_sec: 60,
-    port: 80,
-    proxy_header: "NONE",
-    request: "",
-    request_path: "/"
-    response: "",
-    timeout_sec: 10
-    type: "http",
-    unhealthy_threshold: 5
-  }
+  base_instance_name    = "notus-1-mig"
+  instance_group_name   = "notus-1-mig"
+  instance_group_region = var.compute_region_2
+  instance_template     = google_compute_instance_template.mywebserver-template.self_link_unique
+  health_check          = google_compute_health_check.http-health-check.self_link
 }
 
 # -----------------------------------------------
 # Task 5. Configure the Application Load Balancer (HTTP)
 # -----------------------------------------------
 
-module "lb-http" {
-  source  = "terraform-google-modules/lb-http/google"
-  version = "14.2.0"
+resource "google_compute_backend_service" "http-backend" {
+  name                  = "http-backend"
+  health_checks         = [google_compute_health_check.http-health-check.id]
+  protocol              = "HTTP"
+  port_name             = "http"
+  enable_cdn            = false
+  load_balancing_scheme = "EXTERNAL_MANAGED"
 
-  # insert the 3 required variables here
-  backends = {
-    default = {
-      port = 80
-      protocol = "HTTP"
+  backend {
+    balancing_mode        = "RATE"
+    group                 = module.mig-us.instance_group
+    max_rate_per_instance = 50
+    capacity_scaler       = 1
+  }
 
-      groups = [
-        {
-          group = us-1-mig
-        },
-        {
-        }
-      ]
+  backend {
+    balancing_mode  = "UTILIZATION"
+    group           = module.mig-notus.instance_group
+    max_utilization = 0.8
+    capacity_scaler = 1
+  }
 
+  log_config {
+    enable      = true
+    sample_rate = 1.0
+  }
+}
+
+resource "google_compute_url_map" "http-lb" {
+  name            = "http-lb"
+  default_service = google_compute_backend_service.http-backend.self_link
+}
+
+module "lb-frontend" {
+  source = "./modules/frontend"
+
+  name    = "http-lb"
+  url_map = google_compute_url_map.http-lb.self_link
+}
+
+# -----------------------------------------------
+# Task 6. Stress test the Application Load Balancer (HTTP)
+# -----------------------------------------------
+
+resource "google_compute_instance" "test-vm" {
+  name         = "stress-test"
+  zone         = var.nearby_test_zone
+  machine_type = "e2-micro"
+
+  boot_disk {
+    initialize_params {
+      image = google_compute_image.mywebserver.self_link
     }
   }
 
-  name = "http-backend"
-  project = var.project_id
+  network_interface {
+    network = "default"
+  }
+
+  metadata_startup_script = <<-EOT
+    #!/bin/bash
+    ab -n 50000 -c 1000 http://${module.lb-frontend.ipv4_address}/
+  EOT
 }
 
