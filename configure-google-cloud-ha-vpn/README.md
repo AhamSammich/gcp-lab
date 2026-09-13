@@ -1,6 +1,6 @@
 # Configure Google Cloud HA VPN
 
-[Go to lab on partner.skills.google](https://partner.skills.google/paths/77/course_templates/178/labs/644549)
+[Go to lab on skills.google](https://skills.google/paths/77/course_templates/178/labs/644549)
 
 ## Overview
 

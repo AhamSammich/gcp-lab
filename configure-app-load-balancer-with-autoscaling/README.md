@@ -1,6 +1,6 @@
 # Configure an Application Load Balancer with Autoscaling
 
-[Go to lab at partner.skills.google](https://partner.skills.google/paths/77/course_templates/178/labs/644564)
+[Go to lab at skills.google](https://skills.google/paths/77/course_templates/178/labs/644564)
 [Terraform Registry](https://registry.terraform.io/providers/hashicorp/google/6.50.0/docs)
 
 ## Overview
