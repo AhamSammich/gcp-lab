@@ -191,7 +191,7 @@ module "lb-frontend" {
 
 resource "google_compute_instance" "test-vm" {
   name         = "stress-test"
-  zone         = var.nearby_test_zone
+  zone         = var.compute_zone
   machine_type = "e2-micro"
 
   boot_disk {
