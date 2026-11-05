@@ -1,0 +1,48 @@
+"""CLI tests for the auth step: one browser login, end to end.
+
+A full ./lab-start run WITHOUT --skip-auth, against the stub gcloud:
+the auth prompt is answered, and the gcloud log must show the single
+`auth login --update-adc` flow - no second application-default login.
+"""
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from util import run_cli, stub_env
+
+PROJECT = "qwiklabs-gcp-01-newlab"
+
+# stdin, in prompt order: URL (enter to skip), Proceed, Authenticate
+ANSWERS = "\ny\ny\n"
+
+
+class AuthCliTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.workdir = Path(self._tmp.name)
+        self.home = self.workdir / "home"
+        self.gcloud_log = self.workdir / "gcloud.log"
+        self.env = stub_env(self.home, self.gcloud_log)
+
+    def test_auth_is_one_login(self):
+        result = run_cli(
+            self.workdir, self.env, ANSWERS,
+            "auth-lab",
+            "--title", "Auth Lab",
+            "--tasks", "1",
+            "--project", PROJECT,
+            "--zone", "us-central1-a",
+            "--skip-init",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # auth ran and succeeded (not skipped)
+        self.assertIn("gcloud:    ok", result.stdout)
+        log = self.gcloud_log.read_text()
+        self.assertIn("gcloud auth login --update-adc", log)
+        self.assertNotIn("application-default login", log)
+
+
+if __name__ == "__main__":
+    unittest.main()

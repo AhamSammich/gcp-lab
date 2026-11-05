@@ -1,16 +1,8 @@
-# Lab Title Goes Here
+# __LAB_TITLE__
 
-[Go to lab at skills.google](<!-- Add lab URL -->)
+[Go to lab at skills.google](__LAB_URL__)
 
-## Overview
-
-<!-- Add lab overview -->
-
-<!-- Include any images if applicable -->
-
-## Objectives
-
-<!-- Add list of objectives -->
+__LAB_SECTIONS__
 
 ## Installing Terraform in Cloud Shell
 
