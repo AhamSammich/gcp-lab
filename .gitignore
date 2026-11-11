@@ -1,3 +1,13 @@
+# 002 layout: managed lab and archive contents are local-only.
+# Only the .gitkeep placeholders stay trackable so a fresh clone
+# carries the directories without any user work or payloads.
+/labs/*
+!/labs/.gitkeep
+/archives/*
+!/archives/.gitkeep
+
+# sensitive/local exclusions (kept from the flat layout; still apply
+# anywhere in the tree)
 **/.terraform/
 **/.terraform*
 **/*.tfvars

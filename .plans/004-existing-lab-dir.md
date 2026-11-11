@@ -6,6 +6,12 @@
 **Author**: andre + AI-assisted
 **Roadmap**: item 4
 
+> Historical layout note (added 2026-11-06): this spec predates the
+> 002 directory restructure (`.plans/002-directory-restructure.md`).
+> Paths and examples here reflect the old flat layout, where labs
+> lived at the repository root; labs now live under `labs/` and the
+> helpers root-anchor their targets. Kept unchanged as history.
+
 ## Overview
 
 When `./lab-start` is pointed at a directory that already exists, it

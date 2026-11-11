@@ -6,11 +6,18 @@ tfvars, unset gcloud's project/region/zone config, and revoke the
 lab credentials (ADC, then the account gcloud is using - lab-start
 logged in with the student credentials, so that's the one to go).
 
-Run it from inside a lab dir, or name the lab from the repo root:
+Run it from any directory - only managed labs under labs/ are
+resettable:
 
-  ./lab-reset                            # current dir is the lab
-  ./lab-reset landing-zone-challenge
+  ./lab-reset                            # current dir is the lab (labs/<slug>)
+  ./lab-reset my-lab                     # bare slug, from anywhere
+  ./lab-reset labs/my-lab                 # explicit managed path
   ./lab-reset --dry-run                  # show, don't touch
+
+Anything else - the old flat-root labs, the repository root, labs/,
+templates/, archives/, traversal, a symlinked target, or an alias
+that merely resolves onto a managed lab - is refused before any file
+or credential is touched.
 
 Why this exists: the old bash lab-reset.sh hung forever on
 `gcloud auth application-default revoke`. It sent the command's
@@ -39,6 +46,12 @@ REPO_ROOT = Path(__file__).resolve().parent
 # `import lab-start` can't find it - SourceFileLoader loads any file
 # as a module by hand. Importing is side-effect free: everything it
 # does hides behind main() and its __main__ guard.
+#
+# dont_write_bytecode first: a SourceFileLoader otherwise drops a
+# __pycache__/lab-startcpython-*.pyc next to the scripts on every
+# reset, littering the repository (and defeating any before/after
+# comparison of an untouched tree).
+sys.dont_write_bytecode = True
 _loader = importlib.machinery.SourceFileLoader(
     "lab_start", str(REPO_ROOT / "lab-start"))
 _spec = importlib.util.spec_from_loader("lab_start", _loader)
@@ -145,18 +158,21 @@ def main() -> int:
         prog="lab-reset",
         description=(
             "Tear a finished lab back down: delete tfstate and tfvars, "
-            "unset gcloud config, revoke the lab credentials."
+            "unset gcloud config, revoke the lab credentials. "
+            "Only managed labs under labs/ are resettable."
         ),
         epilog=(
             "examples:\n"
             "  ./lab-reset                            # current dir is the lab\n"
-            "  ./lab-reset landing-zone-challenge     # from the repo root\n"
+            "  ./lab-reset my-lab                     # bare slug, from anywhere\n"
+            "  ./lab-reset labs/my-lab                # explicit managed path\n"
             "  ./lab-reset --dry-run                  # show, don't touch\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("directory", nargs="?",
-                        help="lab directory (default: current directory)")
+                        help="lab to reset: a slug (labs/<slug>), an explicit "
+                             "managed path, or nothing for the current directory")
     parser.add_argument("-n", "--dry-run", action="store_true",
                         help="show what would happen without doing it")
     args = parser.parse_args()
@@ -165,9 +181,17 @@ def main() -> int:
     _ensure_log()
     LOG.debug("invoked with %s", vars(args))
 
-    lab_dir = Path(args.directory).resolve() if args.directory else Path.cwd()
-    if not lab_dir.is_dir():
-        sys.exit(f"{RED}{lab_dir} is not a directory{RST}")
+    # --- resolve the target before anything is touched -----------------
+    # The same boundary lab-start uses: a reset only ever aims at one
+    # managed lab under labs/. Collection roots, old flat-root labs,
+    # traversal, and symlinks are refused here, before a single file
+    # is deleted or any gcloud command runs - dry-run or not.
+    if args.directory:
+        lab_dir = lab_start.resolve_lab_target(args.directory, cwd=Path.cwd(),
+                                                must_exist=True)
+    else:
+        lab_dir = lab_start.resolve_lab_target(str(Path.cwd()), cwd=Path.cwd(),
+                                               must_exist=True)
     LOG.debug("resetting %s (dry_run=%s)", lab_dir, args.dry_run)
     print(f"{CYN}lab{RST} {lab_dir}\n")
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lab-start - scaffold a new GCP terraform lab from terraform-lab-scaffold/.
+"""lab-start - scaffold a new GCP terraform lab into labs/<slug>/.
 
 One invocation collects everything the lab needs and does the busywork:
 
@@ -19,11 +19,17 @@ Stdlib only - the browser fetch is an optional escalation, installed with:
   python3 -m venv .venv
   .venv/bin/pip install playwright && .venv/bin/playwright install chromium
 
-Run it from the repo root:
+Labs are managed directories: every target resolves to a direct child
+of labs/ next to this script, no matter which directory you invoke it
+from. Templates live under templates/ and are selected internally
+(standard, by default) - there is no template flag or prompt.
 
-  ./lab-start my-new-lab
+Run it from anywhere:
+
+  ./lab-start my-new-lab                    # creates labs/my-new-lab/
   ./lab-start my-new-lab --tasks 4 --skip-auth
   ./lab-start my-old-lab --use-existing   # refresh: lab-reset + re-scaffold
+  ./lab-start labs/my-lab                 # explicit managed path
   ./lab-start --url https://partner.skills.google/course_templates/1573/labs/620245
 """
 
@@ -35,7 +41,9 @@ import logging
 import logging.handlers
 import os
 import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -44,16 +52,40 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
-# --- where the templates live -----------------------------------------
-# Path(__file__) is this script; .resolve() makes SCAFFOLD_DIR correct no
-# matter which directory you invoke ./lab-start from.
+# --- where things live ------------------------------------------------------
+# Path(__file__) is this script; .resolve() makes every derived path
+# correct no matter which directory you invoke ./lab-start from.
 REPO_ROOT = Path(__file__).resolve().parent
-SCAFFOLD_DIR = REPO_ROOT / "terraform-lab-scaffold"
+TEMPLATES_DIR = REPO_ROOT / "templates"
+LABS_DIR = REPO_ROOT / "labs"
 
-# Files copied verbatim from the scaffold. Task files are generated
-# instead, because how many there are is a per-lab detail. (The reset
-# is ./lab-reset at the repo root - one copy serves every lab, and
-# bugfixes propagate instead of fossilizing in each lab dir.)
+# Internal template registry. The CLI always uses the standard
+# template today; identity and lookup stay behind this boundary so a
+# future template needs no call-site changes - and so no public flag,
+# prompt, or auto-detection grows around an unfinished workflow.
+DEFAULT_TEMPLATE = "standard"
+TEMPLATE_IDS = ("standard", "terraform")
+_TEMPLATE_DIRS = {
+    "standard": "new-standard-lab",
+    "terraform": "new-terraform-lab",
+}
+
+
+def template_dir(name: str = DEFAULT_TEMPLATE) -> Path:
+    """The directory template `name` lives in (raises on unknown names).
+
+    Internal only: the CLI passes no name and uses the default.
+    """
+    try:
+        return TEMPLATES_DIR / _TEMPLATE_DIRS[name]
+    except KeyError:
+        raise ValueError(
+            f"unknown template {name!r} (known: {', '.join(TEMPLATE_IDS)})") from None
+
+# Files copied verbatim from the selected template. Task files are
+# generated instead, because how many there are is a per-lab detail.
+# (The reset is ./lab-reset at the repo root - one copy serves every
+# lab, and bugfixes propagate instead of fossilizing in each lab dir.)
 TEMPLATE_FILES = ("backend.tf", "providers.tf", "variables.tf", "README.md")
 
 # Placeholders the script fills in. Plain unique markers + str.replace,
@@ -167,23 +199,45 @@ def ask(prompt: str, default: str | None = None, validate=None, optional: bool =
     default  - shown as [hint]; pressing enter accepts it
     validate - fn(value) -> error string or None; bad answers re-prompt
     optional - an empty answer returns None instead of re-prompting
+
+    Defaults are validated exactly like typed answers: a default that
+    fails the validator (e.g. a page-derived slug that collides with an
+    existing lab) is refused, never silently accepted. An exhausted
+    stdin refuses an invalid default or an unanswered required prompt
+    instead of spinning forever.
     """
+    stdin_done = False  # set on the first EOF: no answer is ever coming
     while True:
         hint = f" [{YLW}{default}{RST}]" if default is not None else ""
-        try:
-            answer = input(f"{CYN}?{RST} {prompt}{hint}: ").strip()
-        except EOFError:
-            answer = ""  # stdin exhausted (piped input): behave like enter
+        if stdin_done:
+            answer = ""  # behave like enter on every later iteration
+        else:
+            try:
+                answer = input(f"{CYN}?{RST} {prompt}{hint}: ").strip()
+            except EOFError:
+                answer = ""  # stdin exhausted (piped input): behave like enter
+                stdin_done = True
         if not answer:
             if default is not None:
+                if validate:
+                    problem = validate(default)
+                    if problem:
+                        if stdin_done:
+                            sys.exit(f"{RED}  {problem}{RST}")
+                        print(f"{RED}  {problem}{RST}")
+                        continue
                 return default
             if optional:
                 return None
+            if stdin_done:
+                sys.exit(f"{RED}  this one is required (no answer on stdin){RST}")
             print(f"{YLW}  this one is required{RST}")
             continue
         if validate:
             problem = validate(answer)
             if problem:
+                if stdin_done:
+                    sys.exit(f"{RED}  {problem}{RST}")
                 print(f"{RED}  {problem}{RST}")
                 continue
         return answer
@@ -216,12 +270,13 @@ def check_use_new(value: str):
 
 
 def check_fresh_slug(value: str):
-    """check_slug + must not exist: the re-entry prompt after 'new'."""
+    """check_slug + must not exist under labs/: the re-entry prompt after 'new'."""
     problem = check_slug(value)
     if problem:
         return problem
-    if (Path.cwd() / value).exists():
-        return f"{value}/ already exists"
+    target = LABS_DIR / value
+    if target.exists() or target.is_symlink():
+        return f"labs/{value}/ already exists"
 
 
 def check_url(value: str):
@@ -229,6 +284,166 @@ def check_url(value: str):
     # offline tests, exactly like a real URL would
     if not (re.match(r"^https?://", value) or value.startswith("file://")):
         return "must start with http://, https:// or file://"
+
+
+# --- managed lab targets -----------------------------------------------------
+# The one resolution boundary shared by lab-start and lab-reset. A lab
+# is a direct child of LABS_DIR with a kebab-case slug, and every
+# target - positional argument, prompted name, page-derived default,
+# reset argument, or current directory - resolves through here before
+# any fetch, reset, or write can happen:
+#
+#   * a bare slug maps to labs/<slug> from ANY working directory
+#   * an explicit path (caller-relative or absolute) must NAME
+#     labs/<slug> directly: the same place, nothing deeper, nowhere
+#     else - and no alias may stand in for the lab, even one that
+#     resolves onto labs/<slug> (a root-level legacy-alias, a link
+#     nested in another lab). Ancestor aliases (a platform's /var vs
+#     /private/var, an outside checkout alias pointing AT the repo
+#     root) stay valid; once the path enters the repo, the ENTIRE
+#     remainder must be the literal labs/<slug> pair, and an alias
+#     that first lands inside the repo below its root is refused
+#   * the old flat root, other labs' interiors, templates/, archives/,
+#     collection roots, `..` traversal, symlinked targets, symlinked
+#     labs/ roots, and plain files are all refused
+def _refuse(message: str, hint: str | None = None) -> None:
+    if hint:
+        sys.exit(f"{RED}{message}{RST}\n{YLW}hint: {hint}{RST}")
+    sys.exit(f"{RED}{message}{RST}")
+
+
+def _same_directory(path: Path, other: Path) -> bool:
+    # Path.resolve() can retain equivalent case/Unicode spellings. Only
+    # filesystem identity locates the physical repository boundary.
+    try:
+        return path.samefile(other)
+    except (FileNotFoundError, NotADirectoryError):
+        # Missing prefixes are normal when selecting a new lab.
+        return False
+
+
+def resolve_lab_target(raw: str, *, cwd: Path | None = None,
+                       must_exist: bool = False) -> Path:
+    """Resolve `raw` to a managed lab directory; refuse anything else.
+
+    Returns the absolute labs/<slug> path, or exits with a refusal:
+    nothing is fetched, reset, or written for a refused target. An
+    explicit path must NAME labs/<slug> directly: the path may enter
+    the repository only once, at its root, and everything below that
+    first entry must be exactly the two components `labs` and the
+    slug - an alias resolving onto labs/<slug> (a root-level
+    legacy-alias, a link nested in another lab) is not a way in, and
+    neither is an outside alias that lands inside the repo below its
+    root. Ancestor aliases (a platform's /var vs /private/var) stay
+    valid; only the lab target itself may not be reached through a
+    symlink. With
+    must_exist=True (lab-reset), a missing target is a refusal too -
+    there is no "fresh clone" interpretation of a reset.
+    """
+    cwd = (cwd or Path.cwd()).resolve()
+    labs = LABS_DIR
+
+    # labs/ itself must be a real directory: a symlinked collection
+    # root would aim every managed path at whatever it points at
+    if labs.is_symlink():
+        _refuse(f"{labs} is a symlink - refusing to work through it")
+    if labs.exists() and not labs.is_dir():
+        _refuse(f"{labs} exists and is not a directory")
+
+    if "/" in raw:
+        # a literal '..' component never names a managed lab, whatever
+        # it normalizes to after resolution - reject it BEFORE
+        # resolving, so `labs/detour/../victim-lab` cannot walk in as
+        # labs/victim-lab. ('.' components are dropped by Path and
+        # stay valid; a bare slug cannot contain '..' - check_slug
+        # already refuses it.)
+        if ".." in Path(raw).parts:
+            _refuse(f"{raw!r}: '..' path components are not a lab target",
+                    "name the lab directly: labs/<slug>")
+        # explicit path: caller-relative or absolute. The SUPPLIED
+        # path decides, not its canonicalization: its final component
+        # may not be a symlink - an alias that happens to resolve
+        # onto labs/<slug> (a root-level legacy-alias, a link nested
+        # in another lab) is not a way in. Canonicalization only
+        # sorts out ancestors, which a platform may alias (macOS
+        # /var vs /private/var); ancestor aliases stay valid.
+        supplied = Path(raw) if Path(raw).is_absolute() else cwd / raw
+        if supplied.is_symlink():
+            _refuse(f"{supplied} is a symlink - refusing to work through it",
+                    "name the lab directly: labs/<slug>")
+        candidate = supplied.resolve()
+        if candidate.parent != labs:
+            if candidate.parent == REPO_ROOT and candidate != labs:
+                _refuse(f"{candidate} is not a managed lab under {labs}/",
+                        "old flat-root labs are not targets; the one-time "
+                        "002 migration moves them into labs/ at Release")
+            _refuse(f"{candidate} is not a managed lab under {labs}/")
+        # boundary walk on the SUPPLIED spelling, not the resolved
+        # one: walk the supplied path's components from the root
+        # down, resolving ancestors ONLY to find where the path
+        # FIRST enters this repository. An ancestor alias may point
+        # AT the repository root - a platform's /var vs /private/var,
+        # an outside checkout alias - but everything BELOW that
+        # first entry must then be exactly labs/<slug>: two literal
+        # non-symlink components, with no alias in between, so
+        # `labs/other-lab/labs/victim-lab` and
+        # `labs/other-lab/repo-alias/labs/victim-lab` cannot name a
+        # lab they merely resolve onto no matter how clean their
+        # suffix is. A path whose first entry into the repo lands
+        # BELOW the root - an outside alias aimed at a lab interior
+        # that reaches back up and around - is refused outright.
+        # Case must match exactly too: a conservative refusal on
+        # case-insensitive platforms.
+        parts = Path(os.path.normpath(str(supplied))).parts
+        remainder = None
+        for i in range(1, len(parts) + 1):
+            resolved = Path(*parts[:i]).resolve()
+            if _same_directory(resolved, REPO_ROOT):
+                # first entry into the repo is the boundary: the
+                # ENTIRE remainder, not just the final components,
+                # must be the literal labs directory and the slug
+                remainder = parts[i:]
+                break
+            if any(_same_directory(parent, REPO_ROOT)
+                   for parent in resolved.parents):
+                # below the root before any root boundary: an alias
+                # pointing at a sublab may not reach back up to a
+                # managed lab, whatever it resolves onto next
+                _refuse(f"{raw!r} enters the repository below its root "
+                        f"(first at {resolved}) - only labs/<slug> is "
+                        "a lab target",
+                        "name the lab directly: labs/<slug>")
+        if (remainder is None or len(remainder) != 2
+                or remainder[0] != labs.name
+                or remainder[1] != candidate.name
+                or Path(*parts[:len(parts) - 1]).is_symlink()):
+            _refuse(f"{raw!r} does not name the lab directly - it only "
+                    f"resolves onto {candidate}",
+                    "name the lab directly: labs/<slug>")
+        name = candidate.name
+    else:
+        # bare slug: validated and anchored to labs/, never the caller's
+        # directory and never the old flat root
+        problem = check_slug(raw)
+        if problem:
+            _refuse(f"{raw!r}: {problem}", "a new lab lands at labs/<slug>")
+        name = raw
+
+    problem = check_slug(name)
+    if problem:
+        _refuse(f"{name!r}: {problem}")
+
+    target = labs / name
+    if target.is_symlink():
+        _refuse(f"{target} is a symlink - refusing to work through it")
+    if target.exists():
+        if not target.is_dir():
+            _refuse(f"{target} exists and is not a directory")
+    elif must_exist:
+        _refuse(f"{target} is not a directory",
+                "managed labs live under labs/, e.g. labs/my-lab")
+    return target
+
 
 
 # --- best-effort lab page fetch ---------------------------------------------
@@ -743,10 +958,16 @@ def scaffold(lab_dir: Path, title: str, url: str | None, sections_md: str | None
     missing, and a task stub is written only for a file that doesn't
     exist - task files are user work, never overwritten.
     """
-    lab_dir.mkdir(exist_ok=True)
+    lab_dir.mkdir(parents=True, exist_ok=True)
+    template = template_dir()
     copied = [lab_dir / name for name in TEMPLATE_FILES]
     for path in copied:
-        shutil.copy2(SCAFFOLD_DIR / path.name, path)
+        # copyfile addresses the exact output filename: an existing
+        # directory at the destination is an error, never a folder to
+        # copy INTO (copy2's dest-directory semantics). copystat
+        # keeps copy2's metadata preservation.
+        shutil.copyfile(template / path.name, path)
+        shutil.copystat(template / path.name, path)
 
     # render the README: swap each placeholder for a collected value
     readme = lab_dir / "README.md"
@@ -763,12 +984,15 @@ def scaffold(lab_dir: Path, title: str, url: str | None, sections_md: str | None
     readme.write_text(text)
 
     # one stub per task, titled from the page when the page told us;
-    # an existing task<N>.tf is user work - kept byte-identical
+    # an existing task<N>.tf is user work - kept byte-identical.
+    # is_symlink() covers DANGLING links too: exists() is False for
+    # those, and a write would follow the link out of the lab. A task
+    # link is a user entry - kept as-is, referent untouched.
     task_files = []
     for n in range(1, tasks + 1):
         stub_title = next((t["title"] for t in task_titles if t["n"] == n), "")
         task = lab_dir / f"task{n}.tf"
-        if task.exists():
+        if task.exists() or task.is_symlink():
             LOG.debug("%s already exists - kept as-is%s", task,
                       " (refresh)" if refresh else "")
             continue
@@ -893,12 +1117,26 @@ def require_lab_reset() -> None:
                  f"{YLW}hint: chmod +x lab-reset (or restore it: git checkout -- lab-reset){RST}")
 
 
-def use_or_new(args, lab_dir: Path) -> tuple[str | None, bool]:
+def require_existing_for_use(args, lab_dir: Path) -> None:
+    """--use-existing names an existing lab: a missing target is a
+    typo to fail on, never a replacement to scaffold.
+
+    Enforced after ANY target selection - positional, typed at the
+    prompt, or page-derived default - and before any side effect.
+    """
+    if args.use_existing and not lab_dir.exists():
+        sys.exit(f"{RED}{lab_dir} does not exist, and --use-existing must not "
+                 f"scaffold a replacement after a typo{RST}\n"
+                 f"{YLW}hint: drop --use-existing to create it, or check the name{RST}")
+
+
+def use_or_new(args, lab_dir: Path) -> tuple[Path | None, bool]:
     """The user named an existing dir: use it, or pick a new name.
 
     Returns (directory, refresh); (None, False) means "new name" -
     the caller re-enters the directory prompt with a not-exists
-    validator.
+    validator. The directory comes back as the resolved lab path
+    itself, not just its basename.
     """
     # an unattended run must never silently reset + rewrite
     if args.yes and not args.use_existing:
@@ -916,7 +1154,7 @@ def use_or_new(args, lab_dir: Path) -> tuple[str | None, bool]:
               f"lab dir, not resetting it{RST}")
         return None, False
     require_lab_reset()
-    return lab_dir.name, True
+    return lab_dir, True
 
 
 def refresh_keeps(lab_dir: Path) -> list[str]:
@@ -938,11 +1176,43 @@ def refresh_keeps(lab_dir: Path) -> list[str]:
     return keeps
 
 
+# --- output safety boundary ---------------------------------------------
+# A refresh rewrites the generated artifacts in place. If one of those
+# paths is a symlink, every write (copy, read_text, write_text)
+# follows it: a link aimed outside the lab turns the refresh into an
+# external overwrite, and a DANGLING link (exists() is False) turns a
+# rewrite into creating the referent. A path that is not a regular
+# file at all - a directory named backend.tf, say - is just as
+# hostile: copy2 treats an existing destination directory as a folder
+# to copy INTO, so the template lands at backend.tf/backend.tf, and a
+# symlink nested there escapes the lab. Refuse every generated
+# destination that exists and is not a regular file before the reset
+# runs and before anything is written. Task files are different:
+# they are user entries, so a task link - even a dangling one - is
+# kept as-is and its referent never touched (scaffold treats
+# is_symlink() as "exists").
+def refuse_unsafe_generated_outputs(lab_dir: Path) -> None:
+    """Exit before any reset or write if a generated output is not a
+    regular file (a symlink - dangling included - or a directory)."""
+    for name in (*TEMPLATE_FILES, "terraform.tfvars"):
+        path = lab_dir / name
+        if path.is_symlink():
+            sys.exit(f"{RED}{path} is a symlink - refusing to write through it{RST}\n"
+                     f"{YLW}hint: remove the link, then refresh again "
+                     f"(task files are never rewritten; this one is generated){RST}")
+        if os.path.lexists(path) and not stat.S_ISREG(os.lstat(path).st_mode):
+            sys.exit(f"{RED}{path} exists and is not a regular file - refusing "
+                     f"to treat it as a copy destination{RST}\n"
+                     f"{YLW}hint: a directory here would be copied INTO, not "
+                     f"replaced; remove it, then refresh again "
+                     f"(task files are never rewritten; this one is generated){RST}")
+
+
 # --- main -----------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="lab-start",
-        description="Scaffold a new GCP terraform lab from terraform-lab-scaffold/.",
+        description="Scaffold a new GCP terraform lab into labs/<slug>/.",
         epilog=(
             "examples:\n"
             "  ./lab-start my-new-lab\n"
@@ -951,11 +1221,15 @@ def main() -> int:
             "  ./lab-start --url https://partner.skills.google/course_templates/1573/labs/620245\n"
             "  ./lab-start old-lab --use-existing   # refresh: lab-reset + re-scaffold\n"
             "\n"
-            "Anything passed as a flag is one question you won't be asked."
+            "The target is always a managed lab under labs/, whatever your\n"
+            "current directory is. Anything passed as a flag is one question\n"
+            "you won't be asked."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("directory", nargs="?", help="new lab directory, kebab-case")
+    parser.add_argument("directory", nargs="?",
+                        help="lab to create or refresh: a slug (labs/<slug>) or "
+                             "an explicit path to a managed lab under labs/")
     parser.add_argument("--title", help="human-readable lab title (README H1)")
     parser.add_argument("--url", help="lab URL, used to pre-fill the README")
     parser.add_argument("--tasks", type=int, help="how many task<N>.tf files to create")
@@ -974,21 +1248,31 @@ def main() -> int:
     _ensure_log()
     LOG.debug("invoked with %s", args)
 
-    # --- existing dir? decide the mode before any fetch work --------
+    # --- resolve the target before any fetch work --------------------
     # The fetch is expensive (a full Chromium run on sign-in-walled
-    # pages), so a positional dir that already exists settles
-    # use-or-new FIRST: *use* = ./lab-reset + re-scaffold (refresh),
-    # *new* = the directory prompt again, after the fetch.
-    directory = args.directory
+    # pages), so the target is resolved and the use-or-new decision
+    # settles FIRST: *use* = ./lab-reset + re-scaffold (refresh),
+    # *new* = the directory prompt again, after the fetch. A missing
+    # target with --use-existing dies here - it must not scaffold a
+    # replacement after a typo.
+    lab_dir = None
     refresh = False
     pending_new = False
-    if directory:
-        candidate = Path.cwd() / directory
-        if candidate.exists():
-            if not candidate.is_dir():
-                sys.exit(f"{RED}{candidate} exists and is not a directory{RST}")
-            directory, refresh = use_or_new(args, candidate)
-            pending_new = directory is None
+    if args.directory:
+        lab_dir = resolve_lab_target(args.directory, cwd=Path.cwd())
+        if lab_dir.exists():
+            if use_or_new(args, lab_dir)[0] is None:
+                # the user chose a new name (or was refused the use path)
+                pending_new = True
+                lab_dir = None
+            else:
+                refresh = True
+                # output safety before the fetch: a symlinked or
+                # non-file generated output would turn the refresh
+                # into an external write
+                refuse_unsafe_generated_outputs(lab_dir)
+        else:
+            require_existing_for_use(args, lab_dir)
 
     # --- fetch phase: the page answers most of the questions --------
     # URL comes first so a successful fetch can derive the title, the
@@ -1075,24 +1359,38 @@ def main() -> int:
         slug = "-".join(_tf_name(page_title).replace("_", " ").split()[:6]) or None
 
     if pending_new:
-        # the user saw the existing dir and chose "new" (or was
-        # refused the use path) - this prompt refuses existing names
-        directory = ask("New lab directory (kebab-case)",
-                        default=slug, validate=check_fresh_slug)
-    elif not directory:
-        directory = ask("New lab directory (kebab-case)",
-                         default=slug, validate=check_slug)
-        candidate = Path.cwd() / directory
-        if candidate.is_dir():
-            directory, refresh = use_or_new(args, candidate)
-            if directory is None:
-                directory = ask("New lab directory (kebab-case)",
-                                default=slug, validate=check_fresh_slug)
-    lab_dir = Path.cwd() / directory
+        # the user saw the existing lab and chose "new" (or was
+        # refused the use path) - this prompt refuses existing names,
+        # including its own default (ask validates defaults like
+        # typed answers)
+        name = ask("New lab directory (kebab-case)",
+                   default=slug, validate=check_fresh_slug)
+        lab_dir = resolve_lab_target(name, cwd=Path.cwd())
+    elif lab_dir is None:
+        name = ask("New lab directory (kebab-case)",
+                   default=slug, validate=check_slug)
+        lab_dir = resolve_lab_target(name, cwd=Path.cwd())
+        if lab_dir.exists():
+            if use_or_new(args, lab_dir)[0] is None:
+                name = ask("New lab directory (kebab-case)",
+                           default=slug, validate=check_fresh_slug)
+                lab_dir = resolve_lab_target(name, cwd=Path.cwd())
+            else:
+                refresh = True
+                refuse_unsafe_generated_outputs(lab_dir)
+        else:
+            # a prompted or page-derived default is as much a target
+            # selection as a positional: --use-existing on a missing
+            # one must fail here, before any side effect
+            require_existing_for_use(args, lab_dir)
+
+    # every path below agrees on this one resolved target: preview,
+    # reset, scaffold, and the next-step cd all name labs/<slug>
+    display = lab_dir.relative_to(REPO_ROOT)
 
     # precedence: --title flag > the page's own title > name-based guess
     title = args.title or page_title or \
-        ask("Lab title", default=directory.replace("-", " ").title())
+        ask("Lab title", default=lab_dir.name.replace("-", " ").title())
 
     tasks = args.tasks or int(ask(
         "How many tasks (one task<N>.tf each)",
@@ -1127,14 +1425,21 @@ def main() -> int:
     region = args.region or fetched["region"] or zone.rsplit("-", 1)[0]
 
     # --- confirm: preview before side effects ----------------------------
-    missing = [n for n in TEMPLATE_FILES if not (SCAFFOLD_DIR / n).is_file()]
+    # the selected template is validated here - before any reset or
+    # rewrite, so a missing template file can neither destroy an
+    # existing lab nor leave partial generated output behind
+    template = template_dir()
+    missing = [n for n in TEMPLATE_FILES if not (template / n).is_file()]
     if missing:
-        sys.exit(f"{RED}templates missing from {SCAFFOLD_DIR}: {', '.join(missing)}{RST}")
+        sys.exit(f"{RED}templates missing from {template}: {', '.join(missing)}{RST}")
 
     task_files = "task1.tf" if tasks == 1 else f"task1.tf..task{tasks}.tf"
     print()
     print(f"{BLU}Here's the plan:{RST}")
-    print(f"  {CYN}directory{RST}  {directory}/ "
+    # the resolved absolute target, not a repo-relative summary: the
+    # caller may be outside the repository, where a relative path
+    # names nothing (spec: previews show the resolved target)
+    print(f"  {CYN}directory{RST}  {lab_dir}/ "
           f"({'existing - refresh' if refresh else 'new'})")
     if refresh:
         print(f"  {CYN}reset{RST}     clears: terraform.tfstate*, *.tfvars*, "
@@ -1147,7 +1452,8 @@ def main() -> int:
     task_note = " (titled from the page)" if page_tasks else ""
     if refresh:
         missing = [f"task{n}.tf" for n in range(1, tasks + 1)
-                   if not (lab_dir / f"task{n}.tf").exists()]
+                   if not ((lab_dir / f"task{n}.tf").exists()
+                           or (lab_dir / f"task{n}.tf").is_symlink())]
         task_note = (f" (+ creates {', '.join(missing)})" if missing
                      else " (existing files kept)")
     print(f"  {CYN}tasks{RST}      {tasks} file(s): {task_files}{task_note}")
@@ -1176,7 +1482,7 @@ def main() -> int:
         if rc != 0:
             sys.exit(f"{RED}lab-reset failed (exit {rc}) - nothing was rewritten{RST}")
 
-    with Spinner(f"{CYN}{'refreshing' if refresh else 'scaffolding'} {directory}{RST}"):
+    with Spinner(f"{CYN}{'refreshing' if refresh else 'scaffolding'} {display}{RST}"):
         created = scaffold(lab_dir, title, url, sections_md, tasks, page_tasks,
                            project, region, zone, fetched["extras"], refresh=refresh)
     LOG.debug("scaffolded %d files into %s", len(created), lab_dir)
@@ -1204,7 +1510,7 @@ def main() -> int:
     # --- summary ------------------------------------------------------------
     banner("LAB READY")
 
-    print(f"{GRN}{'Refreshed' if refresh else 'Created'} {len(created)} files in {directory}/:{RST}")
+    print(f"{GRN}{'Refreshed' if refresh else 'Created'} {len(created)} files in {display}/:{RST}")
     for path in created:
         print(f"  {path.name}")
     if refresh:
@@ -1228,7 +1534,10 @@ def main() -> int:
         print(f"\n{YLW}README still has placeholders - fill in the overview/objectives from the lab page{RST}")
 
     print(f"\n{CYN}Next steps:{RST}")
-    print(f"  cd {directory}")
+    # the resolved absolute target, quoted when it needs quoting: the
+    # printed cd works pasted into the caller's shell, wherever that
+    # shell happens to be - including outside the repository
+    print(f"  cd {shlex.quote(str(lab_dir))}")
     if init_status != "initialized":
         print(f"  terraform init")
     print(f"  # write resources in task<N>.tf as you work through the lab")

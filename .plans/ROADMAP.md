@@ -25,26 +25,6 @@ section at the bottom.
 
 ---
 
-## 2. Directory restructure
-
-The repo grows a layout instead of everything at the root:
-
-- rename `terraform-lab-scaffold/` -> `templates/new-standard-lab/`
-  (a `git mv`, so history follows the files)
-- create `labs/` - unarchived, in-progress lab dirs live here; new
-  labs scaffold into it
-- create `archives/` - completed labs, zipped and moved out of the way
-- create `templates/new-terraform-lab/` - for labs that explicitly
-  instruct the use of terraform: they usually involve cloning an
-  existing repo rather than writing from scratch, so this template
-  carries instructions/scripts, not our skeleton `.tf` files
-
-- [ ] **Plan** - [002-directory-restructure.md](002-directory-restructure.md)
-- [ ] **Build** - the layout exists; `lab-start` reads templates from
-  `templates/` and scaffolds new labs into `labs/`
-- [ ] **Release** - the root-level lab dirs are moved into `labs/`,
-  and no code or docs reference the old flat layout
-
 ## 3. One CLI: `cloud-lab` (working title)
 
 `lab-start` and `lab-reset` become subcommands of a single CLI, plus
@@ -53,7 +33,8 @@ one new command:
 - `cloud-lab start` - today's `./lab-start`
 - `cloud-lab reset` - today's `./lab-reset`
 - `cloud-lab archive` - zip a finished lab and move it to `archives/`
-  (assumes the layout from item 2)
+  (assumes the layout from item 2; labs and archives remain local-only
+  and gitignored)
 
 - [ ] **Plan** - [003-cloud-lab-cli.md](003-cloud-lab-cli.md)
 - [ ] **Build** - the subcommands work; the old entry points still
@@ -103,3 +84,51 @@ are never touched.
   (`python3 -m unittest discover -s tests`)
 - [x] **Release** - exercised on a real unfinished lab
   (`landing-zone-challenge/`); the exit-on-exists branch is gone
+
+### 2. Directory restructure
+
+The repo became a scaffolding tool for users to clone or fork, rather
+than a tracked collection of completed labs. The layout now is:
+
+- `terraform-lab-scaffold/` renamed to `templates/new-standard-lab/`
+  (a `git mv`, so history followed the files)
+- `labs/` - unarchived, in-progress lab dirs live here; new labs
+  scaffold into it; contents are local-only and gitignored
+- `archives/` - completed labs, zipped out of the way during Release:
+  all tracked labs were archived here; wholly untracked labs moved
+  into `labs/`, including their local working files. Archives are
+  local-only and gitignored, not committed
+- all actual lab content removed from Git tracking, preserving local
+  data. Tooling, reusable templates, documentation, synthetic tests,
+  and directory placeholders stayed tracked; Git history was not
+  rewritten
+- `templates/new-terraform-lab/` - for labs that explicitly instruct
+  the use of terraform: they usually involve cloning an existing repo
+  rather than writing from scratch, so this template carries
+  instructions, not our skeleton `.tf` files (internal plumbing only;
+  defaults to `standard`, with no `--template` flag or selection
+  prompt)
+
+For this item, no legacy-layout support was built. This was an
+exception to the general side-by-side transition rule above.
+
+- [x] **Plan** - [002-directory-restructure.md](002-directory-restructure.md)
+- [x] **Build** - the layout exists; `lab-start` reads templates from
+  `templates/` and scaffolds new labs into `labs/` (evidence recorded
+  in the spec's Phase 2 checklist; the migration and fresh-clone
+  contract tests stayed red on purpose until Release)
+- [x] **Release** - actual migration run 2026-11-07 and independently
+  verified: 15 tracked labs archived to owner-only zips + sidecars
+  under `archives/` (every payload hash, mode, symlink target, and
+  xattr matched the original inventory; all 15 restored and re-verified
+  in disposable directories), 4 untracked labs moved under `labs/`
+  byte-identical, exactly the 67 tracked lab files staged for deletion,
+  `git ls-files` carries only tool/templates/docs/tests/placeholders,
+  and the fresh-clone test went green against the released HEAD
+  (130/130; disposable-clone smoke 30/30)
+
+Final acceptance: independent `GPT-6 Astra#xhigh` adversarial review approved
+the remediated committed code with no remaining P0/P1 findings. The expanded
+suite runs 176 tests: 175 pass and one filesystem-dependent test skips.
+See [the implementation summary](002-implementation-summary.md) for review,
+preservation, and commit details.

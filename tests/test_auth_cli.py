@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import run_cli, stub_env
+from util import make_repo, run_cli, stub_env
 
 PROJECT = "qwiklabs-gcp-01-newlab"
 
@@ -22,13 +22,14 @@ class AuthCliTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.workdir = Path(self._tmp.name)
+        self.repo = make_repo(self.workdir)  # never the real checkout
         self.home = self.workdir / "home"
         self.gcloud_log = self.workdir / "gcloud.log"
         self.env = stub_env(self.home, self.gcloud_log)
 
     def test_auth_is_one_login(self):
         result = run_cli(
-            self.workdir, self.env, ANSWERS,
+            self.repo, self.workdir, self.env, ANSWERS,
             "auth-lab",
             "--title", "Auth Lab",
             "--tasks", "1",
