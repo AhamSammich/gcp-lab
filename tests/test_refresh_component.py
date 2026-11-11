@@ -1,22 +1,24 @@
-"""Component tests: refresh = lab-reset + re-scaffold.
+"""Component tests: refresh = reset + re-scaffold.
 
-Module-import style (lab-start loaded from the isolated fixture repo
-the way lab-reset loads it), temp dirs, and a stub gcloud on PATH -
-the real credentials and config are never touched. The fixture lab
-lives under the fixture repo's labs/ (a managed lab, as the refresh
-flow now requires) and mirrors landing-zone-challenge/: populated
-task files, a user module dir, stale tfstate/tfvars. Template parity
-is asserted against the relocated templates/new-standard-lab.
+Module-import style (the cloud_lab implementation loaded from the
+isolated fixture repo, the way the launchers import it), temp dirs,
+and a stub gcloud on PATH - the real credentials and config are never
+touched. The fixture lab lives under the fixture repo's labs/ (a
+managed lab, as the refresh flow now requires) and mirrors
+landing-zone-challenge/: populated task files, a user module dir,
+stale tfstate/tfvars. Template parity is asserted against the
+relocated templates/new-standard-lab.
 """
 
-import subprocess
-import sys
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from util import (build_lab_dir, load_lab_start, make_repo, snapshot,
-                  stub_env)
+from util import (build_lab_dir, load_lab_reset, load_lab_start, make_repo,
+                  snapshot, stub_env)
 
 NEW_PROJECT = "qwiklabs-gcp-01-newlab"
 EXPECTED_TFVARS = (
@@ -43,16 +45,18 @@ class RefreshComponentTests(unittest.TestCase):
         self.lab = build_lab_dir(self.repo / "labs", "landing-zone-challenge")
 
     def run_reset(self):
-        """The reset half of the refresh, exactly as lab-start invokes it."""
-        result = subprocess.run(
-            [sys.executable, str(self.repo / "lab-reset"), str(self.lab)],
-            env=stub_env(self.home, self.gcloud_log),
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        """The reset half of the refresh, exactly as the start flow invokes it."""
+        reset = load_lab_reset(self.repo)
+        # clear=True: os.environ becomes EXACTLY the env stub_env builds
+        # (the one a subprocess run gets via env=stub_env) - a merging
+        # patch would carry this shell's ambient CLOUDSDK_*/GOOGLE_*/TF_*
+        # overrides into the tools the reset spawns
+        with mock.patch.dict(os.environ, stub_env(self.home, self.gcloud_log),
+                             clear=True):
+            self.assertEqual(reset.reset_lab(str(self.lab)), 0)
 
     def refresh(self):
-        """The full composition: lab-reset, then scaffold(refresh=True)."""
+        """The full composition: the reset half, then scaffold(refresh=True)."""
         self.run_reset()
         created = self.lab_start.scaffold(
             self.lab, "Landing Zone Challenge", "https://example.com/lab",
@@ -66,18 +70,14 @@ class RefreshComponentTests(unittest.TestCase):
 
     # --- the one hard rule: user work survives ---------------------------
     def test_task_files_and_modules_byte_identical(self):
+        # task4.tf is a bare stub in the fixture: even a stub file is
+        # user work and must survive byte-identical
         before = snapshot(self.lab)
         self.refresh()
         for name in ("task1.tf", "task2.tf", "task3.tf", "task4.tf",
                      "shared-vpc/main.tf"):
             self.assertEqual(before[name], (self.lab / name).read_bytes(),
                              f"{name} must survive a refresh untouched")
-
-    def test_no_task_stub_overwritten(self):
-        # task4.tf is a bare stub - even so, refresh must not touch it
-        before = (self.lab / "task4.tf").read_bytes()
-        self.refresh()
-        self.assertEqual(before, (self.lab / "task4.tf").read_bytes())
 
     def test_missing_task_stub_created(self):
         (self.lab / "task3.tf").unlink()
@@ -137,6 +137,32 @@ class RefreshComponentTests(unittest.TestCase):
         after_first = snapshot(self.lab)
         self.refresh()
         self.assertEqual(after_first, snapshot(self.lab))
+
+    # --- CLI-10: the in-process reset half holds the strict stub boundary --
+    def test_run_reset_leaks_no_ambient_cloud_overrides(self):
+        # stub_env strips CLOUDSDK_*/GOOGLE_*/TF_* for subprocess runs
+        # (env=stub_env); an IN-PROCESS reset must hold the same
+        # boundary - a merging environment patch would carry this
+        # shell's ambient overrides into the very tools the reset
+        # spawns. Synthetic stand-ins are planted around the actual
+        # run_reset(); the stub gcloud intercepts every subprocess it
+        # spawns (no real tool ever runs) and reports any inherited
+        # override name to the log this asserts on.
+        synthetic = {
+            "CLOUDSDK_CORE_PROJECT": "ambient-synthetic-project",
+            "GOOGLE_APPLICATION_CREDENTIALS": "ambient-synthetic-creds.json",
+            "TF_CLI_CONFIG_FILE": "ambient-synthetic.tfrc",
+        }
+        with mock.patch.dict(os.environ, synthetic):
+            self.run_reset()
+        log = self.gcloud_log.read_text()
+        # the reset's gcloud steps ran and the stub intercepted them -
+        # otherwise this boundary assertion would prove nothing
+        self.assertIn("gcloud config unset project", log)
+        self.assertNotIn("leaked-override", log,
+                         "ambient cloud-tool overrides reached a spawned tool")
+        for key in synthetic:
+            self.assertNotIn(key, log, f"{key} leaked into a spawned tool")
 
 
 class ScaffoldDestinationTests(unittest.TestCase):
@@ -208,6 +234,94 @@ class RefreshHelperTests(unittest.TestCase):
         for good in ("u", "U", "use", "n", "new"):
             self.assertIsNone(self.lab_start.check_use_new(good))
         self.assertIsNotNone(self.lab_start.check_use_new("x"))
+
+
+class ResetLabRevalidationTests(unittest.TestCase):
+    """CLI-2: the reset entry the refresh flow calls revalidates its
+    target immediately before cleanup.
+
+    A refresh confirms its lab, then may spend minutes fetching the
+    lab page before the reset runs. reset_lab resolves the target
+    AGAIN, right before the first deletion, so a lab that was deleted
+    or swapped for a symlink inside that window is refused - with the
+    referent untouched and no gcloud step started.
+
+    The class's stubbed() invocation also pins CLI-10's strict stub
+    boundary: an in-process reset runs under exactly the environment
+    stub_env builds, the same one a subprocess run gets.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo = make_repo(self.root)
+        self.reset = load_lab_reset(self.repo)
+        self.home = self.root / "home"
+        self.gcloud_log = self.root / "gcloud.log"
+
+    def stubbed(self):
+        # clear=True: EXACTLY the env stub_env builds, never a merge
+        # with this shell's ambient cloud/terraform overrides
+        return mock.patch.dict(os.environ,
+                               stub_env(self.home, self.gcloud_log),
+                               clear=True)
+
+    def assert_no_gcloud(self):
+        log = self.gcloud_log
+        self.assertFalse(log.exists() and log.read_text().strip(),
+                         "gcloud was invoked for a refused reset")
+
+    def test_target_swapped_for_a_symlink_is_refused_before_cleanup(self):
+        # the refresh-shaped call: an ALREADY-RESOLVED target string -
+        # and in the fetch window, the lab is replaced by a symlink
+        # aimed at someone else's tree. The revalidation must refuse
+        # it before the first deletion; the victim stays byte-identical.
+        victim = build_lab_dir(self.root, "victim-lab")
+        lab = build_lab_dir(self.repo / "labs", "revalid-lab")
+        target = str(lab)
+        before = snapshot(victim)
+        shutil.rmtree(lab)
+        (self.repo / "labs" / "revalid-lab").symlink_to(victim)
+        with self.stubbed():
+            with self.assertRaises(SystemExit):
+                self.reset.reset_lab(target)
+        self.assertEqual(before, snapshot(victim),
+                         "cleanup ran through a swapped symlink target")
+        self.assert_no_gcloud()
+
+    def test_target_deleted_in_the_window_is_refused_before_cleanup(self):
+        lab = build_lab_dir(self.repo / "labs", "gone-lab")
+        target = str(lab)
+        shutil.rmtree(lab)
+        with self.stubbed():
+            with self.assertRaises(SystemExit):
+                self.reset.reset_lab(target)
+        self.assert_no_gcloud()
+
+    # --- CLI-10: the stubbed invocation holds the strict stub boundary --
+    def test_stubbed_invocation_leaks_no_ambient_cloud_overrides(self):
+        # the same boundary for THIS class's stubbed() invocation: a
+        # valid reset through it spawns its gcloud steps, and they
+        # must run under exactly the environment stub_env builds -
+        # synthetic ambient overrides planted around the invocation
+        # must not reach the stub tools that intercept every subprocess
+        lab = build_lab_dir(self.repo / "labs", "boundary-lab")
+        synthetic = {
+            "CLOUDSDK_CORE_PROJECT": "ambient-synthetic-project",
+            "GOOGLE_APPLICATION_CREDENTIALS": "ambient-synthetic-creds.json",
+            "TF_CLI_CONFIG_FILE": "ambient-synthetic.tfrc",
+        }
+        with mock.patch.dict(os.environ, synthetic):
+            with self.stubbed():
+                self.assertEqual(self.reset.reset_lab(str(lab)), 0)
+        log = self.gcloud_log.read_text()
+        # the gcloud steps ran and the stub intercepted them
+        self.assertIn("gcloud config unset project", log)
+        self.assertNotIn("leaked-override", log,
+                         "ambient cloud-tool overrides reached a spawned tool")
+        for key in synthetic:
+            self.assertNotIn(key, log, f"{key} leaked into a spawned tool")
 
 
 if __name__ == "__main__":

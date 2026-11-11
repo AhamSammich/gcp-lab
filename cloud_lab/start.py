@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""lab-start - scaffold a new GCP terraform lab into labs/<slug>/.
+"""cloud_lab.start - scaffold a new GCP terraform lab into labs/<slug>/.
 
 One invocation collects everything the lab needs and does the busywork:
 
@@ -15,28 +14,24 @@ One invocation collects everything the lab needs and does the busywork:
   5. auth      one gcloud login --update-adc (gcloud + ADC), then
                project/region/zone config
 
+The reset half of a refresh (start on an existing lab) runs
+cloud_lab.reset directly - the shared implementation, not an external
+executable.
+
 Stdlib only - the browser fetch is an optional escalation, installed with:
   python3 -m venv .venv
   .venv/bin/pip install playwright && .venv/bin/playwright install chromium
 
 Labs are managed directories: every target resolves to a direct child
-of labs/ next to this script, no matter which directory you invoke it
-from. Templates live under templates/ and are selected internally
+of labs/ in this repository, no matter which directory you invoke the
+CLI from. Templates live under templates/ and are selected internally
 (standard, by default) - there is no template flag or prompt.
-
-Run it from anywhere:
-
-  ./lab-start my-new-lab                    # creates labs/my-new-lab/
-  ./lab-start my-new-lab --tasks 4 --skip-auth
-  ./lab-start my-old-lab --use-existing   # refresh: lab-reset + re-scaffold
-  ./lab-start labs/my-lab                 # explicit managed path
-  ./lab-start --url https://partner.skills.google/course_templates/1573/labs/620245
 """
 
 import argparse
-import atexit
 import fnmatch
 import html
+import importlib
 import logging
 import logging.handlers
 import os
@@ -46,18 +41,18 @@ import shutil
 import stat
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Literal, overload
 from urllib.parse import urlsplit
 
-# --- where things live ------------------------------------------------------
-# Path(__file__) is this script; .resolve() makes every derived path
-# correct no matter which directory you invoke ./lab-start from.
-REPO_ROOT = Path(__file__).resolve().parent
+from cloud_lab import reset
+from cloud_lab.common import (BLU, CYN, GRN, LABS_DIR, RED, REPO_ROOT, RST,
+                              Spinner, YLW, banner, cache_dir, check_slug,
+                              resolve_lab_target)
+
 TEMPLATES_DIR = REPO_ROOT / "templates"
-LABS_DIR = REPO_ROOT / "labs"
 
 # Internal template registry. The CLI always uses the standard
 # template today; identity and lookup stay behind this boundary so a
@@ -84,8 +79,9 @@ def template_dir(name: str = DEFAULT_TEMPLATE) -> Path:
 
 # Files copied verbatim from the selected template. Task files are
 # generated instead, because how many there are is a per-lab detail.
-# (The reset is ./lab-reset at the repo root - one copy serves every
-# lab, and bugfixes propagate instead of fossilizing in each lab dir.)
+# (The reset half lives in cloud_lab.reset - one implementation serves
+# every lab and every refresh, and bugfixes propagate instead of
+# fossilizing in each lab dir.)
 TEMPLATE_FILES = ("backend.tf", "providers.tf", "variables.tf", "README.md")
 
 # Placeholders the script fills in. Plain unique markers + str.replace,
@@ -118,82 +114,19 @@ TASK_FILE_TEMPLATE = """\
 """
 
 
-# --- terminal paint ------------------------------------------------------
-# The same ANSI escapes lab-reset.sh uses: \x1b[31m switches the
-# terminal to red, \x1b[0m switches back. When stdout is not a TTY
-# (piped into a file) or NO_COLOR is set, every constant is "" so piped
-# output stays clean - a courtesy to future-you-scripting-this.
-if sys.stdout.isatty() and "NO_COLOR" not in os.environ:
-    RED, GRN, YLW, BLU, CYN, RST = (
-        "\x1b[31m", "\x1b[32m", "\x1b[33m", "\x1b[34m", "\x1b[36m", "\x1b[0m",
-    )
-    HIDE_CURSOR, SHOW_CURSOR = "\x1b[?25l", "\x1b[?25h"
-else:
-    RED = GRN = YLW = BLU = CYN = RST = ""
-    HIDE_CURSOR = SHOW_CURSOR = ""
-
-
-def banner(message: str) -> None:
-    """A `>---  message  ---<` rule, the lab-reset.sh house style."""
-    width = min(shutil.get_terminal_size((80, 24)).columns, 80)
-    padded = f"  {message}  "
-    # dashes to fill whatever width the terminal allows (min 2)
-    fill = max(width - len(padded) - 4, 2)
-    print(f"\n{CYN}>--{padded}{'-' * fill}<{RST}\n")
-
-
-class Spinner:
-    """Animate `message... +` on ONE line while a with-block runs.
-
-    The Python version of the background-subshell spinner in
-    lab-reset.sh: a daemon thread redraws the line with \\r every
-    100ms; on exit the frame is wiped (\\x1b[K) and replaced by the
-    final status. Daemon threads die with the process, so a Ctrl+C can
-    never orphan one.
-    """
-
-    FRAMES = "+x"
-
-    def __enter__(self) -> "Spinner":
-        self._tty = sys.stdout.isatty()
-        if self._tty:
-            print(HIDE_CURSOR, end="", flush=True)
-            self._stop = threading.Event()
-            self._thread = threading.Thread(target=self._spin, daemon=True)
-            self._thread.start()
-        else:
-            # piped into a file: draw one plain line, no \r animation
-            # - clean logs beat animation nobody can see
-            print(f"{self.message}...", flush=True)
-        return self
-
-    def _spin(self) -> None:
-        i = 0
-        while not self._stop.wait(0.1):  # wait() doubles as the sleep
-            frame = self.FRAMES[i % len(self.FRAMES)]
-            print(f"\r{self.message}... {frame}", end="", flush=True)
-            i += 1
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        # the with statement hands us the block's outcome for free:
-        # exc_type is None iff the block ran to the end
-        status = f"{GRN}done{RST}" if exc_type is None else f"{RED}failed{RST}"
-        if self._tty:
-            self._stop.set()
-            self._thread.join()
-            # \r rewrites the spinner line, \x1b[K wipes its leftover tail
-            print(f"\r\x1b[K{self.message}... {status}")
-            print(SHOW_CURSOR, end="", flush=True)
-        else:
-            print(f"{self.message}... {status}")
-        return False  # don't swallow exceptions - let them propagate
-
-    def __init__(self, message: str) -> None:
-        self.message = message
-
-
 # --- interactive prompts ---------------------------------------------------
-def ask(prompt: str, default: str | None = None, validate=None, optional: bool = False):
+@overload
+def ask(prompt: str, default: str | None = None, validate=None,
+        optional: Literal[False] = False) -> str: ...
+
+
+@overload
+def ask(prompt: str, default: str | None = None, validate=None,
+        optional: bool = False) -> str | None: ...
+
+
+def ask(prompt: str, default: str | None = None, validate=None,
+        optional: bool = False) -> str | None:
     """Ask a question until the answer is usable, then return it.
 
     default  - shown as [hint]; pressing enter accepts it
@@ -244,11 +177,6 @@ def ask(prompt: str, default: str | None = None, validate=None, optional: bool =
 
 
 # validators: return an error string (re-prompt) or None (accept)
-def check_slug(value: str):
-    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value):
-        return "kebab-case only, e.g. develop-your-google-network"
-
-
 def check_project(value: str):
     if not re.fullmatch(r"[a-z][a-z0-9-]{5,29}", value):
         return "project ids are 6-30 chars of lowercase letters, digits, hyphens"
@@ -284,166 +212,6 @@ def check_url(value: str):
     # offline tests, exactly like a real URL would
     if not (re.match(r"^https?://", value) or value.startswith("file://")):
         return "must start with http://, https:// or file://"
-
-
-# --- managed lab targets -----------------------------------------------------
-# The one resolution boundary shared by lab-start and lab-reset. A lab
-# is a direct child of LABS_DIR with a kebab-case slug, and every
-# target - positional argument, prompted name, page-derived default,
-# reset argument, or current directory - resolves through here before
-# any fetch, reset, or write can happen:
-#
-#   * a bare slug maps to labs/<slug> from ANY working directory
-#   * an explicit path (caller-relative or absolute) must NAME
-#     labs/<slug> directly: the same place, nothing deeper, nowhere
-#     else - and no alias may stand in for the lab, even one that
-#     resolves onto labs/<slug> (a root-level legacy-alias, a link
-#     nested in another lab). Ancestor aliases (a platform's /var vs
-#     /private/var, an outside checkout alias pointing AT the repo
-#     root) stay valid; once the path enters the repo, the ENTIRE
-#     remainder must be the literal labs/<slug> pair, and an alias
-#     that first lands inside the repo below its root is refused
-#   * the old flat root, other labs' interiors, templates/, archives/,
-#     collection roots, `..` traversal, symlinked targets, symlinked
-#     labs/ roots, and plain files are all refused
-def _refuse(message: str, hint: str | None = None) -> None:
-    if hint:
-        sys.exit(f"{RED}{message}{RST}\n{YLW}hint: {hint}{RST}")
-    sys.exit(f"{RED}{message}{RST}")
-
-
-def _same_directory(path: Path, other: Path) -> bool:
-    # Path.resolve() can retain equivalent case/Unicode spellings. Only
-    # filesystem identity locates the physical repository boundary.
-    try:
-        return path.samefile(other)
-    except (FileNotFoundError, NotADirectoryError):
-        # Missing prefixes are normal when selecting a new lab.
-        return False
-
-
-def resolve_lab_target(raw: str, *, cwd: Path | None = None,
-                       must_exist: bool = False) -> Path:
-    """Resolve `raw` to a managed lab directory; refuse anything else.
-
-    Returns the absolute labs/<slug> path, or exits with a refusal:
-    nothing is fetched, reset, or written for a refused target. An
-    explicit path must NAME labs/<slug> directly: the path may enter
-    the repository only once, at its root, and everything below that
-    first entry must be exactly the two components `labs` and the
-    slug - an alias resolving onto labs/<slug> (a root-level
-    legacy-alias, a link nested in another lab) is not a way in, and
-    neither is an outside alias that lands inside the repo below its
-    root. Ancestor aliases (a platform's /var vs /private/var) stay
-    valid; only the lab target itself may not be reached through a
-    symlink. With
-    must_exist=True (lab-reset), a missing target is a refusal too -
-    there is no "fresh clone" interpretation of a reset.
-    """
-    cwd = (cwd or Path.cwd()).resolve()
-    labs = LABS_DIR
-
-    # labs/ itself must be a real directory: a symlinked collection
-    # root would aim every managed path at whatever it points at
-    if labs.is_symlink():
-        _refuse(f"{labs} is a symlink - refusing to work through it")
-    if labs.exists() and not labs.is_dir():
-        _refuse(f"{labs} exists and is not a directory")
-
-    if "/" in raw:
-        # a literal '..' component never names a managed lab, whatever
-        # it normalizes to after resolution - reject it BEFORE
-        # resolving, so `labs/detour/../victim-lab` cannot walk in as
-        # labs/victim-lab. ('.' components are dropped by Path and
-        # stay valid; a bare slug cannot contain '..' - check_slug
-        # already refuses it.)
-        if ".." in Path(raw).parts:
-            _refuse(f"{raw!r}: '..' path components are not a lab target",
-                    "name the lab directly: labs/<slug>")
-        # explicit path: caller-relative or absolute. The SUPPLIED
-        # path decides, not its canonicalization: its final component
-        # may not be a symlink - an alias that happens to resolve
-        # onto labs/<slug> (a root-level legacy-alias, a link nested
-        # in another lab) is not a way in. Canonicalization only
-        # sorts out ancestors, which a platform may alias (macOS
-        # /var vs /private/var); ancestor aliases stay valid.
-        supplied = Path(raw) if Path(raw).is_absolute() else cwd / raw
-        if supplied.is_symlink():
-            _refuse(f"{supplied} is a symlink - refusing to work through it",
-                    "name the lab directly: labs/<slug>")
-        candidate = supplied.resolve()
-        if candidate.parent != labs:
-            if candidate.parent == REPO_ROOT and candidate != labs:
-                _refuse(f"{candidate} is not a managed lab under {labs}/",
-                        "old flat-root labs are not targets; the one-time "
-                        "002 migration moves them into labs/ at Release")
-            _refuse(f"{candidate} is not a managed lab under {labs}/")
-        # boundary walk on the SUPPLIED spelling, not the resolved
-        # one: walk the supplied path's components from the root
-        # down, resolving ancestors ONLY to find where the path
-        # FIRST enters this repository. An ancestor alias may point
-        # AT the repository root - a platform's /var vs /private/var,
-        # an outside checkout alias - but everything BELOW that
-        # first entry must then be exactly labs/<slug>: two literal
-        # non-symlink components, with no alias in between, so
-        # `labs/other-lab/labs/victim-lab` and
-        # `labs/other-lab/repo-alias/labs/victim-lab` cannot name a
-        # lab they merely resolve onto no matter how clean their
-        # suffix is. A path whose first entry into the repo lands
-        # BELOW the root - an outside alias aimed at a lab interior
-        # that reaches back up and around - is refused outright.
-        # Case must match exactly too: a conservative refusal on
-        # case-insensitive platforms.
-        parts = Path(os.path.normpath(str(supplied))).parts
-        remainder = None
-        for i in range(1, len(parts) + 1):
-            resolved = Path(*parts[:i]).resolve()
-            if _same_directory(resolved, REPO_ROOT):
-                # first entry into the repo is the boundary: the
-                # ENTIRE remainder, not just the final components,
-                # must be the literal labs directory and the slug
-                remainder = parts[i:]
-                break
-            if any(_same_directory(parent, REPO_ROOT)
-                   for parent in resolved.parents):
-                # below the root before any root boundary: an alias
-                # pointing at a sublab may not reach back up to a
-                # managed lab, whatever it resolves onto next
-                _refuse(f"{raw!r} enters the repository below its root "
-                        f"(first at {resolved}) - only labs/<slug> is "
-                        "a lab target",
-                        "name the lab directly: labs/<slug>")
-        if (remainder is None or len(remainder) != 2
-                or remainder[0] != labs.name
-                or remainder[1] != candidate.name
-                or Path(*parts[:len(parts) - 1]).is_symlink()):
-            _refuse(f"{raw!r} does not name the lab directly - it only "
-                    f"resolves onto {candidate}",
-                    "name the lab directly: labs/<slug>")
-        name = candidate.name
-    else:
-        # bare slug: validated and anchored to labs/, never the caller's
-        # directory and never the old flat root
-        problem = check_slug(raw)
-        if problem:
-            _refuse(f"{raw!r}: {problem}", "a new lab lands at labs/<slug>")
-        name = raw
-
-    problem = check_slug(name)
-    if problem:
-        _refuse(f"{name!r}: {problem}")
-
-    target = labs / name
-    if target.is_symlink():
-        _refuse(f"{target} is a symlink - refusing to work through it")
-    if target.exists():
-        if not target.is_dir():
-            _refuse(f"{target} exists and is not a directory")
-    elif must_exist:
-        _refuse(f"{target} is not a directory",
-                "managed labs live under labs/, e.g. labs/my-lab")
-    return target
-
 
 
 # --- best-effort lab page fetch ---------------------------------------------
@@ -493,9 +261,15 @@ def fetch_lab_page(url: str) -> tuple[str, str | None]:
 # fast path; a real browser is the escalation. The Chromium profile
 # persists under the cache dir, so you sign in once and later runs are
 # headless and silent.
-CACHE_DIR = Path.home() / ".cache" / "lab-start"
-BROWSER_PROFILE = CACHE_DIR / "profile"
-AUTH_MARKER = CACHE_DIR / ".authenticated"
+def browser_profile() -> Path:
+    """The persistent Chromium profile (where the session cookie lives)."""
+    return cache_dir() / "profile"
+
+
+def auth_marker() -> Path:
+    """The marker saying the stored browser session is still live."""
+    return cache_dir() / ".authenticated"
+
 
 LOG = logging.getLogger("lab-start")
 
@@ -510,9 +284,9 @@ def _ensure_log() -> None:
     """
     if LOG.handlers:
         return
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_dir().mkdir(parents=True, exist_ok=True)
     handler = logging.handlers.RotatingFileHandler(
-        CACHE_DIR / "lab-start.log", maxBytes=200_000, backupCount=1
+        cache_dir() / "lab-start.log", maxBytes=200_000, backupCount=1
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     LOG.addHandler(handler)
@@ -525,8 +299,8 @@ def _ensure_log() -> None:
 #     "Lab Name - Course Name | Site"
 #   - content images are nested: <p><button><img></button></p>
 #   - <ql-variable> tags hold lab-specific values: the key attribute
-#     ("primary_project.project_id") names the value, and once the lab
-#     is running the real value comes from the control panel's
+#     ("primary_project.project_id") names the value, and once the
+#     lab is running the real value comes from the control panel's
 #     labdetails JSON (or the element's shadow root)
 #   - .js-lab-control-panel carries JSON attributes: labcontrolbutton
 #     {"running": bool} is the "lab in progress" signal, and labdetails
@@ -575,8 +349,8 @@ _EXTRACT_JS = """
     // ql-variable text is empty in serialized HTML; the value it
     // represents lives in the shadow root or labdetails. Substitute so
     // list items don't extract with holes. Clone first: never mutate
-    // the page - and shadow roots don't survive a clone, so read the
-    // originals and write into their clones by index.
+    // the page - and shadow roots don't survive a clone, so read
+    // the originals and write into their clones by index.
     const nodeText = (n) => {
         const clone = n.cloneNode(true);
         const originals = [...n.querySelectorAll("ql-variable")];
@@ -675,23 +449,32 @@ def load_playwright():
     """Import playwright lazily, falling back to the repo's .venv.
 
     Lazy because importing at the top would slow every invocation -
-    even `./lab-start --help` - for a module most runs never touch.
+    even a --help - for a module most runs never touch.
     Returns the sync_playwright factory, or None if not installed.
     """
     try:
-        from playwright.sync_api import sync_playwright
-        return sync_playwright
+        api = importlib.import_module("playwright.sync_api")
     except ImportError:
         pass
+    else:
+        try:
+            return api.sync_playwright
+        except AttributeError:
+            pass  # a missing export is unavailable, just like a failed import
     # try the repo venv's site-packages (first python* found)
     venv = REPO_ROOT / ".venv"
     for site in venv.glob("lib/python*/site-packages"):
         sys.path.insert(0, str(site))
         try:
-            from playwright.sync_api import sync_playwright
-            return sync_playwright
+            api = importlib.import_module("playwright.sync_api")
         except ImportError:
-            sys.path.remove(str(site))
+            pass
+        else:
+            try:
+                return api.sync_playwright
+            except AttributeError:
+                pass
+        sys.path.remove(str(site))
     return None
 
 
@@ -779,14 +562,15 @@ def fetch_lab_page_browser(url: str) -> dict | None:
 
     with sync_playwright() as sync_playwright_ctx:
         def _launch(headless: bool):
-            LOG.debug("launching Chromium headless=%s profile=%s", headless, BROWSER_PROFILE)
+            LOG.debug("launching Chromium headless=%s profile=%s",
+                       headless, browser_profile())
             return sync_playwright_ctx.chromium.launch_persistent_context(
-                str(BROWSER_PROFILE), headless=headless
+                str(browser_profile()), headless=headless
             )
 
         try:
             # stored marker says the profile has a live session -> headless
-            context = _launch(headless=AUTH_MARKER.exists())
+            context = _launch(headless=auth_marker().exists())
         except Exception as err:
             LOG.exception("Chromium launch failed")
             print(f"{YLW}  couldn't launch Chromium: {err}{RST}")
@@ -802,10 +586,10 @@ def fetch_lab_page_browser(url: str) -> dict | None:
             # Qwiklabs bounces anonymous visitors to /users/sign_in
             if "sign_in" in page.url:
                 LOG.debug("sign-in wall detected at %s", page.url)
-                if AUTH_MARKER.exists():
+                if auth_marker().exists():
                     # the headless try found an expired cookie - go visible
                     LOG.debug("stored session has expired - relaunching visible")
-                    AUTH_MARKER.unlink(missing_ok=True)
+                    auth_marker().unlink(missing_ok=True)
                     print(f"{YLW}  stored browser session expired - reopening visible window{RST}")
                     context.close()
                     context = _launch(headless=False)
@@ -817,7 +601,7 @@ def fetch_lab_page_browser(url: str) -> dict | None:
             if "sign_in" in page.url:
                 if not _await_sign_in(page, url):
                     print(f"{YLW}  sign-in did not complete - README placeholders left for you{RST}")
-                    print(f"{YLW}  details in {CACHE_DIR / 'lab-start.log'}{RST}")
+                    print(f"{YLW}  details in {cache_dir() / 'lab-start.log'}{RST}")
                     return None
                 # the post-login redirect usually returns to the lab
                 # page, but re-navigate so we never extract the wrong one
@@ -828,10 +612,10 @@ def fetch_lab_page_browser(url: str) -> dict | None:
             if "sign_in" in page.url:  # still walled after all that
                 LOG.debug("still walled at %s - giving up", page.url)
                 print(f"{YLW}  page still requires sign-in - README placeholders left for you{RST}")
-                print(f"{YLW}  details in {CACHE_DIR / 'lab-start.log'}{RST}")
+                print(f"{YLW}  details in {cache_dir() / 'lab-start.log'}{RST}")
                 return None
 
-            AUTH_MARKER.touch()
+            auth_marker().touch()
             LOG.debug("session confirmed - marker written")
             with Spinner(f"{CYN}extracting lab details{RST}"):
                 info = page.evaluate(_EXTRACT_JS)
@@ -842,10 +626,10 @@ def fetch_lab_page_browser(url: str) -> dict | None:
 
             # keep the last rendered page for tuning the extraction
             try:
-                CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                (CACHE_DIR / "last-lab-page.html").write_text(page.content())
-                page.screenshot(path=str(CACHE_DIR / "last-lab-page.png"), full_page=True)
-                print(f"  {CYN}rendered page cached in {CACHE_DIR} (for selector debugging){RST}")
+                cache_dir().mkdir(parents=True, exist_ok=True)
+                (cache_dir() / "last-lab-page.html").write_text(page.content())
+                page.screenshot(path=str(cache_dir() / "last-lab-page.png"), full_page=True)
+                print(f"  {CYN}rendered page cached in {cache_dir()} (for selector debugging){RST}")
             except Exception:
                 pass  # debug artifacts are a nicety, never a failure
 
@@ -858,7 +642,7 @@ def fetch_lab_page_browser(url: str) -> dict | None:
         except Exception as err:
             LOG.exception("browser fetch failed")
             print(f"{YLW}  browser fetch failed: {err}{RST}")
-            print(f"{YLW}  details in {CACHE_DIR / 'lab-start.log'}{RST}")
+            print(f"{YLW}  details in {cache_dir() / 'lab-start.log'}{RST}")
             try:
                 context.close()
             except Exception:
@@ -1047,7 +831,7 @@ def run_quiet(*cmd: str, cwd: Path | None = None) -> None:
     print "failed" for free.
     """
     result = subprocess.run(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True)
+                            capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout).strip()[-2000:])
 
@@ -1070,7 +854,7 @@ def gcloud_setup(project: str, region: str, zone: str) -> bool:
     # No spinner and no capture: `gcloud auth login` is itself
     # interactive, so stdin/stdout must stay wired to the terminal.
     # --update-adc writes the same credentials to ADC, so one browser
-    # flow covers both stores (./lab-reset still revokes both).
+    # flow covers both stores (the reset still revokes both).
     if subprocess.run(["gcloud", "auth", "login", "--update-adc"]).returncode != 0:
         print(f"{YLW}login did not complete - skipping gcloud setup{RST}")
         return False
@@ -1092,9 +876,10 @@ def gcloud_setup(project: str, region: str, zone: str) -> bool:
 # --- refresh: reuse an existing lab dir -------------------------------------
 # A restarted Qwiklabs lab gets new values (project ID, bucket names...),
 # so a half-finished dir holds stale tfvars and a tfstate pointing at a
-# dead project. *Use* = ./lab-reset (the one owner of reset semantics)
-# then re-scaffold the generated artifacts. Task files and anything
-# else lab-start didn't generate are never touched.
+# dead project. *Use* = reset (cloud_lab.reset owns the semantics, and
+# the refresh calls it directly) then re-scaffold the generated
+# artifacts. Task files and anything else the scaffold didn't generate
+# are never touched.
 def looks_like_lab_dir(lab_dir: Path) -> bool:
     """True when the dir carries at least one .tf file.
 
@@ -1102,19 +887,6 @@ def looks_like_lab_dir(lab_dir: Path) -> bool:
     reset is only ever pointed at a lab.
     """
     return lab_dir.is_dir() and any(lab_dir.glob("*.tf"))
-
-
-def require_lab_reset() -> None:
-    """Exit with a hint unless ./lab-reset exists and runs.
-
-    Refresh is defined as reset + re-scaffold - no reset, no refresh.
-    Checked before the expensive fetch, not between the confirm and
-    the damage.
-    """
-    reset = REPO_ROOT / "lab-reset"
-    if not (reset.is_file() and os.access(reset, os.X_OK)):
-        sys.exit(f"{RED}refresh needs {reset}, but it is missing or not executable{RST}\n"
-                 f"{YLW}hint: chmod +x lab-reset (or restore it: git checkout -- lab-reset){RST}")
 
 
 def require_existing_for_use(args, lab_dir: Path) -> None:
@@ -1142,8 +914,7 @@ def use_or_new(args, lab_dir: Path) -> tuple[Path | None, bool]:
     if args.yes and not args.use_existing:
         sys.exit(f"{RED}{lab_dir} already exists, and --yes must not reset + rewrite "
                  f"an existing dir unattended{RST}\n"
-                 f"{YLW}hint: add --use-existing to allow the refresh:{RST}\n"
-                 f"  ./lab-start {lab_dir.name} --use-existing --yes ...{RST}")
+                 f"{YLW}hint: re-run with --use-existing to allow the refresh{RST}")
     if not args.use_existing:
         choice = ask(f"{lab_dir.name}/ exists. [u]se it or [n]ew name",
                      default="u", validate=check_use_new).lower()
@@ -1153,7 +924,6 @@ def use_or_new(args, lab_dir: Path) -> tuple[Path | None, bool]:
         print(f"{RED}  {lab_dir.name}/ has no .tf files - doesn't look like a "
               f"lab dir, not resetting it{RST}")
         return None, False
-    require_lab_reset()
     return lab_dir, True
 
 
@@ -1208,25 +978,31 @@ def refuse_unsafe_generated_outputs(lab_dir: Path) -> None:
                      f"(task files are never rewritten; this one is generated){RST}")
 
 
-# --- main -----------------------------------------------------------------
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        prog="lab-start",
-        description="Scaffold a new GCP terraform lab into labs/<slug>/.",
-        epilog=(
-            "examples:\n"
-            "  ./lab-start my-new-lab\n"
-            "  ./lab-start my-new-lab --tasks 4 --skip-auth\n"
-            "  ./lab-start my-new-lab --project qwiklabs-gcp-00-abc123 --zone us-central1-a\n"
-            "  ./lab-start --url https://partner.skills.google/course_templates/1573/labs/620245\n"
-            "  ./lab-start old-lab --use-existing   # refresh: lab-reset + re-scaffold\n"
-            "\n"
-            "The target is always a managed lab under labs/, whatever your\n"
-            "current directory is. Anything passed as a flag is one question\n"
-            "you won't be asked."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+# --- entry plumbing -----------------------------------------------------------
+# The argument contract for `labkit start`.
+SUMMARY = ("Scaffold a new GCP terraform lab into labs/<slug>/ - or refresh "
+           "an existing one: reset it, then re-scaffold the generated files "
+           "(task files untouched).")
+
+
+def examples(command: str) -> str:
+    """The help examples, named for the entry point that shows them."""
+    return (
+        "examples:\n"
+        f"  {command} my-new-lab\n"
+        f"  {command} my-new-lab --tasks 4 --skip-auth\n"
+        f"  {command} my-new-lab --project qwiklabs-gcp-00-abc123 --zone us-central1-a\n"
+        f"  {command} --url https://partner.skills.google/course_templates/1573/labs/620245\n"
+        f"  {command} old-lab --use-existing   # refresh: reset + re-scaffold\n"
+        "\n"
+        "The target is always a managed lab under labs/, whatever your\n"
+        "current directory is. Anything passed as a flag is one question\n"
+        "you won't be asked."
     )
+
+
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    """The options for labkit start."""
     parser.add_argument("directory", nargs="?",
                         help="lab to create or refresh: a slug (labs/<slug>) or "
                              "an explicit path to a managed lab under labs/")
@@ -1239,11 +1015,14 @@ def main() -> int:
     parser.add_argument("--skip-init", action="store_true", help="don't run terraform init")
     parser.add_argument("--skip-auth", action="store_true", help="don't run gcloud login/config")
     parser.add_argument("--use-existing", action="store_true",
-                        help="an existing lab dir gets refreshed: ./lab-reset it, then "
+                        help="an existing lab dir gets refreshed: reset it, then "
                              "re-scaffold the generated files (task files untouched)")
     parser.add_argument("-y", "--yes", action="store_true", help="answer yes to all prompts")
-    args = parser.parse_args()
 
+
+# --- main -----------------------------------------------------------------
+def run(args) -> int:
+    """The start workflow, after argument parsing."""
     banner("LAB START")
     _ensure_log()
     LOG.debug("invoked with %s", args)
@@ -1251,7 +1030,7 @@ def main() -> int:
     # --- resolve the target before any fetch work --------------------
     # The fetch is expensive (a full Chromium run on sign-in-walled
     # pages), so the target is resolved and the use-or-new decision
-    # settles FIRST: *use* = ./lab-reset + re-scaffold (refresh),
+    # settles FIRST: *use* = reset + re-scaffold (refresh),
     # *new* = the directory prompt again, after the fetch. A missing
     # target with --use-existing dies here - it must not scaffold a
     # replacement after a typo.
@@ -1443,7 +1222,7 @@ def main() -> int:
           f"({'existing - refresh' if refresh else 'new'})")
     if refresh:
         print(f"  {CYN}reset{RST}     clears: terraform.tfstate*, *.tfvars*, "
-              f"gcloud config + credentials (via ./lab-reset)")
+              f"gcloud config + credentials")
         print(f"  {CYN}rewrites{RST}  {', '.join(TEMPLATE_FILES)}, terraform.tfvars")
         keeps = refresh_keeps(lab_dir)
         print(f"  {CYN}keeps{RST}     {', '.join(keeps) if keeps else '(nothing else)'}")
@@ -1473,14 +1252,20 @@ def main() -> int:
 
     # --- execution phase: no more questions, just work ---------------------
     if refresh:
-        # reset first, then re-scaffold - lab-reset's banners and
-        # spinners print inline, so exactly what got cleared is visible.
+        # reset first, then re-scaffold - the shared reset prints its
+        # banners and spinners inline, so exactly what got cleared is
+        # visible. A DIRECT call, never the legacy executable: a
+        # refresh depends on the reset implementation, not on a file
+        # that happens to sit next to the entry point. reset_lab
+        # revalidates the target immediately before its cleanup and
+        # returns 1 if the local cleanup fails, so nothing below runs
+        # unless the lab really was reset.
         # flush first: piped runs are block-buffered, and the reset's
         # output must not overtake the preview the user just approved.
         sys.stdout.flush()
-        rc = subprocess.run([str(REPO_ROOT / "lab-reset"), str(lab_dir)]).returncode
+        rc = reset.reset_lab(str(lab_dir))
         if rc != 0:
-            sys.exit(f"{RED}lab-reset failed (exit {rc}) - nothing was rewritten{RST}")
+            sys.exit(f"{RED}reset failed (exit {rc}) - nothing was rewritten{RST}")
 
     with Spinner(f"{CYN}{'refreshing' if refresh else 'scaffolding'} {display}{RST}"):
         created = scaffold(lab_dir, title, url, sections_md, tasks, page_tasks,
@@ -1545,12 +1330,13 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
-    # if the script dies mid-spinner, the cursor stays hidden without this
-    atexit.register(lambda: print(SHOW_CURSOR, end=""))
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        # 130 = 128 + SIGINT, the Unix convention for "killed by Ctrl+C"
-        print(f"\n{YLW}cancelled{RST}")
-        sys.exit(130)
+def main(argv=None, prog="labkit start") -> int:
+    """Parse and run the start workflow."""
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description=SUMMARY,
+        epilog=examples(prog),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_arguments(parser)
+    return run(parser.parse_args(argv))

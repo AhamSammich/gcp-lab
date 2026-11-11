@@ -1,17 +1,23 @@
-"""Component tests for internal template plumbing - RED until Phase 2.
+"""Behavior tests for the standard-only template workflow.
 
-The CLI stays standard-only: no --template flag, no selection prompt,
-no auto-detection, no alternate end-to-end workflow. Template
-identity and directory lookup live behind a small internal boundary
-on the lab-start module:
+The CLI stays standard-only: no --template flag, no selection
+prompt, no auto-detection, no alternate end-to-end workflow.
+Template identity and directory lookup are internal implementation
+details and are not frozen here; these tests verify what a user
+observes:
 
-    DEFAULT_TEMPLATE  - "standard", the implicit choice
-    TEMPLATE_IDS      - every known template ("standard", "terraform")
-    template_dir(name=DEFAULT_TEMPLATE) -> Path under templates/
+  * `labkit start --help` offers no template selector
+  * the real checkout ships the unwired manual-reference
+    instructions template (its explanatory content is
+    manual-review material)
+  * a missing template fails BEFORE any reset or write
+  * a broken unwired template cannot affect a standard run
+  * a scaffolded lab matches the shipped template byte for byte
 
 Exercised against the isolated fixture repo (tests/util.make_repo),
 so these tests read and write neither the real scripts nor the real
-template trees.
+template trees; the shipped-template check reads the real checkout
+the way a fresh clone would.
 """
 
 import subprocess
@@ -20,8 +26,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import (FULL_FLAGS, REPO_ROOT, TEMPLATE_FILES, build_lab_dir,
-                  load_lab_start, make_repo, run_cli, snapshot, stub_env)
+from util import (FULL_FLAGS, REPO_ROOT, build_lab_dir, load_lab_start,
+                  make_repo, run_cli, snapshot, stub_env)
 
 EXPECTED_TFVARS = (
     "# lab-specific values (*.tfvars is gitignored - stays local)\n"
@@ -31,7 +37,7 @@ EXPECTED_TFVARS = (
 )
 
 
-class TemplatePlumbingTests(unittest.TestCase):
+class TemplateBehaviorTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -41,70 +47,24 @@ class TemplatePlumbingTests(unittest.TestCase):
     def load(self):
         return load_lab_start(self.repo)
 
-    # --- internal identity and lookup --------------------------------
-    def test_default_template_is_standard(self):
-        self.assertEqual(self.load().DEFAULT_TEMPLATE, "standard")
-
-    def test_registry_lists_both_templates(self):
-        self.assertEqual(set(self.load().TEMPLATE_IDS), {"standard", "terraform"})
-
-    def test_default_resolves_to_relocated_standard_dir(self):
-        mod = self.load()
-        expected = self.repo / "templates" / "new-standard-lab"
-        self.assertEqual(mod.template_dir(), expected)
-        self.assertEqual(mod.template_dir(mod.DEFAULT_TEMPLATE), expected)
-        for name in TEMPLATE_FILES:
-            self.assertTrue((expected / name).is_file(), name)
-
-    def test_named_template_resolution(self):
-        mod = self.load()
-        self.assertEqual(mod.template_dir("standard"),
-                         self.repo / "templates" / "new-standard-lab")
-        terraform = mod.template_dir("terraform")
-        self.assertEqual(terraform, self.repo / "templates" / "new-terraform-lab")
-        self.assertTrue(terraform.is_dir())
-
-    def test_unknown_template_name_refused(self):
-        with self.assertRaises(ValueError):
-            self.load().template_dir("bogus")
-
     # --- nothing public is exposed ------------------------------------
     def test_no_public_template_selector(self):
         env = stub_env(self.root / "home", self.root / "gcloud.log")
         result = subprocess.run(
-            [sys.executable, str(self.repo / "lab-start"), "--help"],
+            # CLI-11/1/2: final command retains standard-only help.
+            [sys.executable, str(self.repo / "labkit"), "start", "--help"],
             env=env, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("--template", result.stdout)
 
-    # --- the real repo ships both template directories -----------------
+    # --- the real repo ships the manual-reference template --------------
     def test_terraform_instructions_template_ships(self):
-        # a fresh clone must carry the instructions template, not just
-        # the internal plumbing that names it
+        # a fresh clone must carry the unwired instructions template;
+        # its explanatory content stays manual-review material
         readme = REPO_ROOT / "templates" / "new-terraform-lab" / "README.md"
         self.assertTrue(readme.is_file(),
                         "templates/new-terraform-lab/README.md is not tracked yet")
-        text = readme.read_text()
-        # the same title, URL, and extracted-section placeholders as
-        # the standard README
-        for placeholder in ("__LAB_TITLE__", "__LAB_URL__", "__LAB_SECTIONS__"):
-            self.assertIn(placeholder, text)
-        # it explains the deferred workflow: authenticating with the
-        # student account, cloning the lab's upstream repository into
-        # the working lab directory, selecting the instructed
-        # subdirectory, and following that repository's own
-        # init/variables/backend instructions
-        self.assertRegex(text, r"(?i)student account")
-        self.assertRegex(text, r"(?i)clone")
-        self.assertRegex(text, r"(?i)subdirectory")
-        self.assertRegex(text, r"(?i)\binit\b")
-        self.assertRegex(text, r"(?i)backend")
-        # ...without inventing upstream values: no concrete
-        # repository URL, host, or branch - the lab page names those
-        self.assertNotRegex(text, r"(?i)git\s+clone\s+(https?|git@|[\w.-]+[:/])")
-        self.assertNotRegex(text, r"(?i)github\.com|gitlab\.com|bitbucket")
-        self.assertNotRegex(text, r"(?i)--branch\s+\S+")
 
     # --- template safety -------------------------------------------------
     def run_standard(self, env, *argv):
@@ -147,12 +107,13 @@ class TemplatePlumbingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue((self.repo / "labs" / "standard-lab" / "task1.tf").is_file())
 
-    # --- standard output stays equivalent through the new plumbing -----
+    # --- standard output matches the shipped template -------------------
     def test_standard_scaffold_output_matches_template_bytes(self):
         mod = self.load()
         env = stub_env(self.root / "home", self.root / "gcloud.log")
         result = subprocess.run(
-            [sys.executable, str(self.repo / "lab-start"),
+            # CLI-11/2: final command preserves scaffold byte parity.
+            [sys.executable, str(self.repo / "labkit"), "start",
              "parity-lab", "--yes", *FULL_FLAGS],
             cwd=self.repo, env=env, capture_output=True, text=True, timeout=120,
         )

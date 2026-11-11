@@ -28,9 +28,17 @@ working subdirectory to select; nothing here invents those for you.
 Use the student account from the lab page. `gcloud auth login
 --update-adc` covers both gcloud itself and the application-default
 credentials Terraform authenticates with, in one browser flow.
-When the lab is finished, revoke both by running `./lab-reset`
-from the repository root, naming this lab (or, from inside this
-lab directory, `../../lab-reset` with no argument).
+For ordinary local cleanup, run `./labkit reset <lab-slug>` from
+the tool repository root (or `../../labkit reset` from inside this
+lab directory). This removes local state and tfvars and revokes credentials;
+it does not destroy cloud resources.
+
+To finish and keep the full lab, destroy resources first if needed while
+state and credentials are available. From the tool repository root, preview
+with `./labkit archive <lab-slug> --dry-run`, run
+`./labkit archive <lab-slug>`, then `./labkit reset --credentials-only`.
+The ignored archive pair includes hidden and sensitive files. See the tool
+README for manual recovery into a fresh destination and single-writer limits.
 
 ## Installing Terraform in Cloud Shell
 

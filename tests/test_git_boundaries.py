@@ -7,7 +7,7 @@ rules) pin the tracking contract:
     - `git add -A` can never stage user lab work or an archive
   * the tracked placeholders (labs/.gitkeep, archives/.gitkeep) stay
     trackable
-  * a fresh clone of the real repository is a scaffolding tool: the
+  * CLI-11/10: a fresh clone of a committed candidate fixture is a tool: the
     target layout with both template directories, no completed-lab
     trees, no archive payloads, no flat scaffold dir
 
@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import (REPO_ROOT, TEMPLATE_FILES, make_git_repo, run_git)
+from util import (TEMPLATE_FILES, make_git_repo, run_git, stub_env)
 
 
 class IgnoreRuleTests(unittest.TestCase):
@@ -72,21 +72,41 @@ class FreshCloneTests(unittest.TestCase):
         self.workdir = Path(self._tmp.name)
 
     def test_fresh_clone_is_scaffolding_only(self):
+        # CLI-11/10: candidate files only, not evidence about real checkout HEAD.
+        source = make_git_repo(self.workdir)
+        run_git(source, "add", ".")
+        run_git(source, "commit", "-m", "candidate tool", "--no-verify")
         clone = self.workdir / "clone"
-        result = subprocess.run(
-            ["git", "clone", "--quiet", str(REPO_ROOT), str(clone)],
-            capture_output=True, text=True,
-        )
+        result = run_git(source, "clone", "--quiet", str(source), str(clone))
         self.assertEqual(result.returncode, 0, result.stderr)
-        # the root carries the tool only - no completed-lab trees
+        # the root carries the tool only - no completed-lab trees.
+        # The final executable and its package, with no legacy launchers.
         allowed = {".git", ".gitignore", ".plans", "AGENTS.md", "README.md",
-                   "lab-start", "lab-reset", "templates", "labs", "archives",
+                   "labkit", "cloud_lab", "templates", "labs", "archives",
                    "tests", "scripts"}
         top = {p.name for p in clone.iterdir()}
         self.assertEqual(top - allowed, set(), sorted(top - allowed))
+        self.assertIn("labkit", top)
+        for obsolete in ("cloud-lab", "lab-start", "lab-reset"):
+            self.assertNotIn(obsolete, top)
+        env = stub_env(self.workdir / "home", self.workdir / "gcloud.log")
+        for args in (("--help",), ("start", "--help"),
+                     ("reset", "--help"), ("archive", "--help")):
+            result = subprocess.run([str(clone / "labkit"), *args],
+                                    cwd=self.workdir, env=env,
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("usage: labkit", result.stdout)
+        self.assertFalse((self.workdir / "gcloud.log").exists())
+        self.assertFalse((self.workdir / "home" / ".cache").exists())
         # managed dirs exist via their tracked placeholders
         self.assertTrue((clone / "labs" / ".gitkeep").is_file())
         self.assertTrue((clone / "archives" / ".gitkeep").is_file())
+        self.assertEqual({p.name for p in (clone / "labs").iterdir()}, {".gitkeep"})
+        self.assertEqual({p.name for p in (clone / "archives").iterdir()}, {".gitkeep"})
+        self.assertTrue((clone / "scripts" / "restore_lab.py").is_file())
+        instructions = clone / "templates" / "new-terraform-lab" / "README.md"
+        self.assertTrue(instructions.is_file())
         # the standard template moved with its history
         for name in TEMPLATE_FILES:
             self.assertTrue((clone / "templates" / "new-standard-lab" / name).is_file(),

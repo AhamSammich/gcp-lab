@@ -1,4 +1,4 @@
-"""Shared helpers for the lab-start test suite.
+"""Shared helpers for the labkit test suite (CLI-11/CLI-10).
 
 Hermetic by construction: `gcloud` is a stub script that logs its
 calls instead of touching real credentials, HOME is redirected into a
@@ -6,14 +6,14 @@ tempdir (so the tools' ~/.cache/lab-start logs land there too), and
 terraform is never invoked (--skip-init).
 
 Phase 002 makes the suite repo-hermetic as well: `make_repo()` builds
-an isolated scaffolding-tool checkout (the helper scripts plus the
-template trees) inside a tempdir. CLI tests run the fixture's scripts,
-never the real checkout, so no test can write into the actual
-repository's `labs/` no matter how target resolution changes.
+an isolated scaffolding-tool checkout (the labkit CLI,
+the shared cloud_lab implementation package, and
+the template trees) inside a tempdir. CLI tests run the fixture's
+scripts, never the real checkout, so no test can write into the
+actual repository's `labs/` no matter how target resolution changes.
 """
 
-import importlib.machinery
-import importlib.util
+import importlib
 import ctypes
 import os
 import shutil
@@ -24,11 +24,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-# --- extended attributes, independently of scripts/migrate_002.py ------
+# --- extended attributes, independently of production preservation ------
 # The test helpers deliberately re-implement the libc calls the
-# migration helper uses, so a shared bug cannot make a preservation
+# preservation code uses, so a shared bug cannot make a preservation
 # test pass against wrongly-restored data. macOS needs the 4-arg
-# signatures with an options word; glibc uses the 3-arg ones.
+# signatures with an options word; Linux uses separate l* functions
+# for no-follow reads (three args for listing, four for getting).
 #
 # XATTR_NOFOLLOW is 0x0001 on Darwin (0x0008 is XATTR_REPLACE - the
 # wrong value previously lived here AND in the helper, and the two
@@ -68,7 +69,13 @@ def list_xattrs(path, follow_symlinks: bool = True) -> dict:
     darwin = sys.platform == "darwin"
     opts = 0 if follow_symlinks else _XATTR_NOFOLLOW
     path_b = os.fsencode(path)
-    listxattr = libc.listxattr
+    try:
+        if not darwin and not follow_symlinks:
+            listxattr, getxattr = libc.llistxattr, libc.lgetxattr
+        else:
+            listxattr, getxattr = libc.listxattr, libc.getxattr
+    except AttributeError as err:
+        raise RuntimeError("no-follow xattr support unavailable") from err
     listxattr.restype = ctypes.c_ssize_t
     if darwin:
         listxattr.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
@@ -87,7 +94,6 @@ def list_xattrs(path, follow_symlinks: bool = True) -> dict:
     if size < 0:
         raise OSError(ctypes.get_errno(), "listxattr read failed", str(path))
     names = [n for n in buf.raw[:size].split(b"\0") if n]
-    getxattr = libc.getxattr
     getxattr.restype = ctypes.c_ssize_t
     if darwin:
         # (path, name, value, size, position, options)
@@ -142,7 +148,7 @@ def set_xattr(path, name: bytes, value: bytes) -> None:
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno), str(path))
 
-# the four files the standard template carries (lab-start copies
+# the four files the standard template carries (labkit start copies
 # them verbatim into every new lab)
 TEMPLATE_FILES = ("README.md", "backend.tf", "providers.tf", "variables.tf")
 
@@ -158,45 +164,80 @@ FULL_FLAGS = (
 
 # the stub: records every invocation, answers 0, prints nothing -
 # `gcloud config get-value account` yields an empty active account,
-# so lab-reset takes its "no active account to revoke" path
+# so labkit reset takes its "no active account to revoke" path.
+# It also reports any CLOUDSDK_*/GOOGLE_*/TF_* override it INHERITS:
+# stub_env strips those from every env it builds, so a name here
+# means the calling environment leaked through its boundary - the
+# one hermeticity breach this suite must never commit. The probe
+# uses the python3 stub_env symlinks into the stub bin: the stub's
+# PATH is the stub bin alone, so no system text tools are visible.
 GCLOUD_STUB = """#!/bin/sh
 echo "gcloud $*" >> "$GCLOUD_LOG"
+python3 -c 'import os
+with open(os.environ["GCLOUD_LOG"], "a") as log:
+    for key in sorted(k for k in os.environ
+                      if k.startswith(("CLOUDSDK_", "GOOGLE_", "TF_"))):
+        log.write("leaked-override " + key + "\\n")'
 exit 0
 """
 
 
-def load_module(name: str, path: Path):
-    """Import any file as a module, the way lab-reset loads lab-start."""
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+def load_cloud_lab(repo_root: Path, module: str):
+    """Import cloud_lab.<module> anchored at repo_root - fresh each call.
+
+    The implementation modules reach each other through ordinary
+    package imports, so the checkout under test goes on sys.path and
+    the package is imported by its real name. Any cloud_lab modules
+    already imported are dropped first: an import cached from another
+    checkout would pin THAT checkout's REPO_ROOT on every later load,
+    and each test's fixture must be anchored at its own repo. Bytecode
+    writing is off for the load - the modules must not drop a
+    __pycache__ into the checkout under test.
+    """
+    for name in [n for n in sys.modules
+                 if n == "cloud_lab" or n.startswith("cloud_lab.")]:
+        del sys.modules[name]
+    repo = str(repo_root)
+    sys.path.insert(0, repo)
+    wrote_bytecode = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        return importlib.import_module(f"cloud_lab.{module}")
+    finally:
+        sys.dont_write_bytecode = wrote_bytecode
+        sys.path.remove(repo)
 
 
 def load_lab_start(repo_root: Path = REPO_ROOT):
-    """Import lab-start (no .py extension) as a module, like lab-reset does."""
-    return load_module("lab_start", repo_root / "lab-start")
+    """The start implementation module, as labkit start runs it."""
+    return load_cloud_lab(repo_root, "start")
 
 
-def load_migrate_002(repo_root: Path = REPO_ROOT):
-    """Import the one-time 002 migration helper (scripts/migrate_002.py)."""
-    return load_module("migrate_002", repo_root / "scripts" / "migrate_002.py")
+def load_lab_reset(repo_root: Path = REPO_ROOT):
+    """The reset implementation module, as labkit reset runs it."""
+    return load_cloud_lab(repo_root, "reset")
 
 
 def stub_env(home: Path, gcloud_log: Path) -> dict:
-    """A hermetic env: ONLY the stub bin on PATH, HOME in the tempdir."""
+    """A hermetic env: ONLY the stub bin on PATH, HOME in the tempdir.
+
+    Real cloud-tool overrides are stripped too: a stub PATH alone
+    does not neutralize CLOUDSDK_* or GOOGLE_APPLICATION_CREDENTIALS
+    (or TF_* terraform config), which a tool honoring them could
+    follow straight to the owner's real credentials and config.
+    """
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     gcloud = bin_dir / "gcloud"
     gcloud.write_text(GCLOUD_STUB)
     gcloud.chmod(0o755)
-    # lab-reset's shebang is `#!/usr/bin/env python3` - point that at
+    # labkit's shebang is `#!/usr/bin/env python3` - point that at
     # the interpreter running the tests
     python3 = bin_dir / "python3"
     if not python3.exists():
         python3.symlink_to(sys.executable)
-    env = dict(os.environ)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("CLOUDSDK_", "GOOGLE_", "TF_"))}
     env["PATH"] = str(bin_dir)  # nothing real can leak in
     env["HOME"] = str(home)
     env["GCLOUD_LOG"] = str(gcloud_log)
@@ -259,28 +300,43 @@ def snapshot_nofollow(root: Path) -> dict:
 
 
 def run_cli(repo: Path, cwd: Path, env: dict, stdin_text: str, *argv: str):
-    """Run the FIXTURE repo's lab-start as a subprocess, the way a user would."""
+    """CLI-11/2: run the fixture's final start command."""
     return subprocess.run(
-        [sys.executable, str(repo / "lab-start"), *argv],
+        [sys.executable, str(repo / "labkit"), "start", *argv],
         cwd=cwd, env=env, input=stdin_text,
         capture_output=True, text=True, timeout=120,
     )
 
 
 def run_reset(repo: Path, cwd: Path, env: dict, *argv: str):
-    """Run the FIXTURE repo's lab-reset as a subprocess."""
+    """CLI-11/2/3: run the fixture's final reset command."""
     return subprocess.run(
-        [sys.executable, str(repo / "lab-reset"), *argv],
+        [sys.executable, str(repo / "labkit"), "reset", *argv],
         cwd=cwd, env=env, input="",
+        capture_output=True, text=True, timeout=120,
+    )
+
+
+def run_cloud_lab(repo: Path, cwd: Path, env: dict, stdin_text: str, *argv: str):
+    """CLI-11/1: run the fixture's final command (internal helper name only)."""
+    return subprocess.run(
+        [sys.executable, str(repo / "labkit"), *argv],
+        cwd=cwd, env=env, input=stdin_text,
         capture_output=True, text=True, timeout=120,
     )
 
 
 def run_git(repo: Path, *args: str, check: bool = True):
     """Run git inside a fixture repo; returns the CompletedProcess."""
+    # -C alone does not constrain an inherited index, worktree, or object
+    # directory. Ignore ambient config too, before even `git init` runs.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               GIT_CONFIG_NOSYSTEM="1")
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
-        capture_output=True, text=True,
+        env=env, capture_output=True, text=True,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr}")
@@ -308,20 +364,27 @@ def same_file_probe(path: Path, spelling: str) -> bool:
 def make_repo(parent: Path) -> Path:
     """An isolated scaffolding-tool checkout in a tempdir.
 
-    Mirrors a fresh clone of the 002 target layout: the two helper
-    scripts, templates/new-standard-lab (the four template files),
-    templates/new-terraform-lab (the instructions README), and managed
-    labs/ + archives/ with tracked placeholders. Template content is
-    copied from the real repo's relocated layout - no flat-scaffold
-    fallback, no synthesized stand-ins: the fixture exercises exactly
-    what a fresh clone ships.
+    Mirrors the candidate CLI-11 layout: the labkit CLI
+    executable, the shared cloud_lab
+    implementation package it imports, templates/new-standard-lab
+    (the four template files), templates/new-terraform-lab (the
+    instructions README), and managed labs/ + archives/ with tracked
+    placeholders. Template content is copied from the real repo's
+    relocated layout - no flat-scaffold fallback, no synthesized
+    stand-ins: the fixture exercises exactly what a fresh clone ships.
     """
     repo = (parent / "repo").resolve()  # real path: matches the way
-    repo.mkdir()                        # lab-start anchors REPO_ROOT
+    repo.mkdir()                        # labkit anchors REPO_ROOT
 
-    for script in ("lab-start", "lab-reset"):
-        shutil.copy2(REPO_ROOT / script, repo / script)
-        (repo / script).chmod(0o755)
+    # copy2 retains the source mode: never mask a non-executable launcher.
+    shutil.copy2(REPO_ROOT / "labkit", repo / "labkit")
+    (repo / "scripts").mkdir()
+    shutil.copy2(REPO_ROOT / "scripts" / "restore_lab.py",
+                 repo / "scripts" / "restore_lab.py")
+
+    # the shared implementation package every entry point imports
+    shutil.copytree(REPO_ROOT / "cloud_lab", repo / "cloud_lab",
+                    ignore=shutil.ignore_patterns("__pycache__"))
 
     relocated = repo / "templates" / "new-standard-lab"
     relocated.mkdir(parents=True)

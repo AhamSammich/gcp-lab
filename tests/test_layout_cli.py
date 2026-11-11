@@ -93,22 +93,7 @@ class LayoutCliTests(unittest.TestCase):
         self.assertFalse((self.scratch / "existing-lab").exists())
         self.assertFalse((self.scratch / "fresh-lab").exists())
 
-    # --- refresh hits the managed lab, from anywhere -----------------
-    def test_use_existing_refreshes_managed_lab_from_outside(self):
-        managed = build_lab_dir(self.repo / "labs", "existing-lab")
-        before = snapshot(managed)
-        result = self.run_start(self.scratch, "", "existing-lab",
-                                "--use-existing", "--yes", *FULL_FLAGS)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("LAB RESET COMPLETE", result.stdout)
-        self.assertFalse((managed / "terraform.tfstate").exists())
-        self.assertIn(NEW_PROJECT, (managed / "terraform.tfvars").read_text())
-        # the hard rule: user work byte-identical through the refresh
-        for name in ("task1.tf", "task2.tf", "task3.tf", "task4.tf",
-                     "shared-vpc/main.tf"):
-            self.assertEqual(before[name], (managed / name).read_bytes())
-        self.assertFalse((self.scratch / "existing-lab").exists())
-
+    # --- --use-existing never scaffolds a missing positional -----------
     def test_use_existing_missing_lab_fails(self):
         # a missing target + --use-existing must fail, not scaffold a
         # replacement after a typo
@@ -117,16 +102,6 @@ class LayoutCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.scratch / "ghost-lab").exists())
         self.assertFalse((self.repo / "labs" / "ghost-lab").exists())
-
-    def test_yes_alone_refuses_existing_managed_lab(self):
-        # --yes without --use-existing must not reset + rewrite
-        managed = build_lab_dir(self.repo / "labs", "existing-lab")
-        before = snapshot(managed)
-        result = self.run_start(self.scratch, "", "existing-lab",
-                                "--yes", *FULL_FLAGS)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(before, snapshot(managed))
-        self.assertFalse((self.scratch / "existing-lab").exists())
 
     # --- the old root is not a lab target anymore --------------------
     def test_old_root_lab_refused_for_refresh(self):

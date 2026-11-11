@@ -1,6 +1,6 @@
 """CLI tests for the auth step: one browser login, end to end.
 
-A full ./lab-start run WITHOUT --skip-auth, against the stub gcloud:
+CLI-11/2: a full labkit start WITHOUT --skip-auth, against stub gcloud:
 the auth prompt is answered, and the gcloud log must show the single
 `auth login --update-adc` flow - no second application-default login.
 """
@@ -28,6 +28,7 @@ class AuthCliTests(unittest.TestCase):
         self.env = stub_env(self.home, self.gcloud_log)
 
     def test_auth_is_one_login(self):
+        # CLI-2: exactly one login followed by the requested config values.
         result = run_cli(
             self.repo, self.workdir, self.env, ANSWERS,
             "auth-lab",
@@ -40,9 +41,13 @@ class AuthCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # auth ran and succeeded (not skipped)
         self.assertIn("gcloud:    ok", result.stdout)
-        log = self.gcloud_log.read_text()
-        self.assertIn("gcloud auth login --update-adc", log)
-        self.assertNotIn("application-default login", log)
+        self.assertEqual(self.gcloud_log.read_text().splitlines(), [
+            "gcloud auth login --update-adc",
+            f"gcloud config set project {PROJECT}",
+            "gcloud config set compute/region us-central1",
+            "gcloud config set compute/zone us-central1-a",
+            "gcloud config get-value account",  # final connection instructions
+        ])
 
 
 if __name__ == "__main__":

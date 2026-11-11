@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""labkit - one repository-local CLI for the GCP lab workflow.
+
+`labkit start` scaffolds a new lab into labs/<slug>/ or refreshes an
+existing one (reset, then re-scaffold); `labkit reset` clears local state
+and credentials; `labkit archive` preserves a finished lab before removing
+its source. Each command documents its own options with
+`labkit <command> --help`, and the work itself lives
+in the cloud_lab package next to this script.
+
+Run it from anywhere:
+
+  ./labkit start my-new-lab
+  ./labkit start my-new-lab --tasks 4 --skip-auth
+  ./labkit start my-old-lab --use-existing   # refresh: reset + re-scaffold
+  ./labkit reset                              # current dir is the lab
+  ./labkit reset my-lab --dry-run
+  ./labkit archive my-lab --dry-run
+"""
+
+import atexit
+import sys
+from pathlib import Path
+
+# resolve the implementation relative to THIS file (a symlinked or
+# PATH-invoked labkit still finds its own cloud_lab package), and
+# keep the checkout clean: no __pycache__ from a lab tool's imports
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import argparse
+
+from cloud_lab import archive, reset, start
+from cloud_lab.common import SHOW_CURSOR, YLW, RST
+
+
+def main(argv=None) -> int:
+    """Parse the command line and hand off to the workflow's module."""
+    parser = argparse.ArgumentParser(
+        prog="labkit",
+        description="One CLI for the GCP lab workflow: "
+                    "scaffold/refresh, reset, and archive labs.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    # Each workflow owns its description, examples, and options.
+    start_parser = commands.add_parser(
+        "start",
+        description=start.SUMMARY,
+        epilog=start.examples("labkit start"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="scaffold a new lab, or refresh an existing one",
+    )
+    start.add_arguments(start_parser)
+
+    reset_parser = commands.add_parser(
+        "reset",
+        description=reset.SUMMARY,
+        epilog=reset.examples("labkit reset"),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="tear a finished lab back down to a clean slate",
+    )
+    reset.add_arguments(reset_parser)
+
+    archive_parser = commands.add_parser(
+        "archive", help="verify an archive pair, then remove one finished lab",
+        description="Preserve one complete managed lab locally, verify both "
+                    "artifacts, then remove its source. Does not destroy cloud "
+                    "resources or clear credentials.",
+    )
+    archive.add_arguments(archive_parser)
+
+    args = parser.parse_args(argv)
+    if args.command == "start":
+        return start.run(args)
+    if args.command == "archive":
+        return archive.run(args)
+    # reset gets its own parser: a refused invocation must print the
+    # reset usage on its way to exit 2
+    return reset.run(args, reset_parser)
+
+
+if __name__ == "__main__":
+    # if the script dies mid-spinner, the cursor stays hidden without this
+    atexit.register(lambda: print(SHOW_CURSOR, end=""))
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        # 130 = 128 + SIGINT, the Unix convention for "killed by Ctrl+C"
+        print(f"\n{YLW}cancelled{RST}")
+        sys.exit(130)

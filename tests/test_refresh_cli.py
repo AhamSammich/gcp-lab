@@ -2,7 +2,7 @@
 
 Retargeted to the 002 managed layout: the existing lab lives under
 the fixture repo's labs/, and a run from outside the repository still
-finds it. Each test runs ./lab-start as a subprocess (piped stdin for
+finds it. CLI-11/2: each test runs labkit start (piped stdin for
 the prompts, stub gcloud on PATH, HOME in a tempdir) and asserts on
 both the exit code and the files left behind.
 """
@@ -43,7 +43,7 @@ class RefreshCliTests(unittest.TestCase):
 
     def assert_refresh_happened(self, result, lab):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        # lab-reset ran, visibly, before the re-scaffold
+        # The reset workflow ran, visibly, before the re-scaffold.
         self.assertIn("LAB RESET", result.stdout)
         self.assertIn("LAB RESET COMPLETE", result.stdout)
         self.assertIn("existing - refresh", result.stdout)
@@ -68,6 +68,9 @@ class RefreshCliTests(unittest.TestCase):
         # the stub has no active account, so ADC revoke is the evidence
         self.assertIn("auth application-default revoke --quiet",
                       self.gcloud_log.read_text())
+        # CLI-2: the refresh targeted labs/<slug>, never the caller's
+        # directory (consolidated from the removed duplicate smokes)
+        self.assertFalse((self.workdir / SLUG).exists())
 
     def test_interactive_default_uses_existing(self):
         # "" at the [u]se/[n]ew prompt accepts the default; "y" proceeds
@@ -83,8 +86,10 @@ class RefreshCliTests(unittest.TestCase):
                                 "--yes", *FULL_FLAGS)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--use-existing", result.stderr)
-        # and nothing happened
+        # and nothing happened anywhere - not even a caller's-directory
+        # twin (consolidated from the removed duplicate smoke)
         self.assertEqual(before, snapshot(lab))
+        self.assertFalse((self.workdir / SLUG).exists())
 
     def test_new_path_leaves_original_untouched(self):
         lab = build_lab_dir(self.repo / "labs", SLUG)
@@ -148,6 +153,25 @@ class RefreshCliTests(unittest.TestCase):
         self.assertIn(f"directory  {lab}/ (new)", result.stdout)
         # no root-level twin: the old flat layout is not a fallback
         self.assertFalse((self.repo / "brand-new-lab").exists())
+
+    def test_refresh_stops_when_local_reset_fails(self):
+        # CLI-2: a refresh whose local cleanup fails stops before
+        # anything is rewritten - no re-scaffold, no gcloud step, and
+        # the stale values stay exactly as they were. (The lab dir is
+        # made read-only so the first tfstate unlink fails.)
+        lab = build_lab_dir(self.repo / "labs", SLUG)
+        before = snapshot(lab)
+        lab.chmod(0o500)  # unlink needs write permission on the lab dir
+        self.addCleanup(lab.chmod, 0o755)
+        result = self.run_start("", SLUG,
+                                "--use-existing", "--yes", *FULL_FLAGS)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nothing was rewritten", result.stderr)
+        # nothing was rewritten: stale tfvars, stale README, user work
+        self.assertEqual(before, snapshot(lab))
+        log = self.gcloud_log
+        self.assertFalse(log.exists() and log.read_text().strip(),
+                         "gcloud ran although the reset had stopped")
 
 
 if __name__ == "__main__":

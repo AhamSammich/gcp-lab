@@ -46,33 +46,37 @@ class GcloudSetupTests(unittest.TestCase):
         env = stub_env(self.home, self.gcloud_log)
         if stub_text is not None:
             (self.home / "bin" / "gcloud").write_text(stub_text)
-        with mock.patch.dict(os.environ, env):
+        with mock.patch.dict(os.environ, env, clear=True):
             return lab_start.gcloud_setup(PROJECT, REGION, ZONE)
 
     def test_one_login_covers_both_stores(self):
+        # CLI-2: exactly one browser flow, not merely at least one.
         self.assertTrue(self.run_setup())
-        log = self.gcloud_log.read_text()
-        # the one browser flow: --update-adc carries the student
-        # credentials into ADC too - no second sign-in
-        self.assertIn("gcloud auth login --update-adc", log)
-        self.assertNotIn("application-default login", log)
+        calls = self.gcloud_log.read_text().splitlines()
+        self.assertEqual([c for c in calls if c.startswith("gcloud auth ")],
+                         ["gcloud auth login --update-adc"])
 
     def test_project_region_zone_set_after_login(self):
-        self.assertTrue(self.run_setup())
-        log = self.gcloud_log.read_text()
-        for cmd in ("config set project",
-                    "config set compute/region",
-                    "config set compute/zone"):
-            self.assertIn(cmd, log)
-        self.assertIn(PROJECT, log)
+        # CLI-2: configure the exact values, in order, after one login.
+        # CLI-10: ambient cloud overrides must not reach the stub tools.
+        with mock.patch.dict(os.environ, {
+            "CLOUDSDK_CORE_PROJECT": "synthetic-ambient-project",
+            "GOOGLE_APPLICATION_CREDENTIALS": str(self.home / "ambient-adc.json"),
+            "TF_CLI_CONFIG_FILE": str(self.home / "ambient.tfrc"),
+        }):
+            self.assertTrue(self.run_setup())
+        self.assertEqual(self.gcloud_log.read_text().splitlines(), [
+            "gcloud auth login --update-adc",
+            f"gcloud config set project {PROJECT}",
+            f"gcloud config set compute/region {REGION}",
+            f"gcloud config set compute/zone {ZONE}",
+        ])
 
     def test_cancelled_login_touches_nothing(self):
+        # CLI-2: a cancelled login is attempted once, without configuration.
         self.assertFalse(self.run_setup(FAIL_LOGIN_STUB))
-        # both-or-neither: the login was attempted, and it bailed
-        # before any config set ran
-        log = self.gcloud_log.read_text()
-        self.assertIn("auth login --update-adc", log)
-        self.assertNotIn("config set", log)
+        self.assertEqual(self.gcloud_log.read_text().splitlines(),
+                         ["gcloud auth login --update-adc"])
 
 
 if __name__ == "__main__":
