@@ -194,8 +194,8 @@ def _guidance(source, paths, *, stream):
     while os.path.lexists(destination):
         destination = source.with_name(f"{source.name}-restored-{number}")
         number += 1
-    print("python3 " + " ".join(shlex.quote(str(pth)) for pth in
-          (REPO_ROOT / "scripts" / "restore_lab.py", paths[0], destination)), file=stream)
+    print(shlex.join(str(part) for part in
+          (REPO_ROOT / "labkit", "restore", paths[0], destination)), file=stream)
     print("cd " + shlex.quote(str(REPO_ROOT)), file=stream)
 
 

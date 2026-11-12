@@ -53,19 +53,20 @@ class CloudLabEntryTestCase(unittest.TestCase):
 
 
 class HelpContractTests(CloudLabEntryTestCase):
+    # RESTORE-1: restore shares discovery, help, and pre-operation parsing.
     # --- CLI-1: help exits 0 and lists the commands -------------------
     def test_top_level_help_lists_the_commands(self):
         result = self.run_cli(self.scratch, "", "--help")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("usage:", result.stdout)
-        for command in ("start", "reset", "archive"):
+        for command in ("start", "reset", "archive", "restore"):
             self.assertIn(command, result.stdout)
 
     def test_command_local_help(self):
         # each command documents its own usage, with the options the
         # workflows already had (CLI-2: existing options preserved)
         results = {}
-        for command in ("start", "reset", "archive"):
+        for command in ("start", "reset", "archive", "restore"):
             with self.subTest(command=command):
                 result = self.run_cli(self.scratch, "", command, "--help")
                 self.assertEqual(result.returncode, 0,
@@ -74,6 +75,8 @@ class HelpContractTests(CloudLabEntryTestCase):
                 results[command] = result.stdout
         self.assertIn("--use-existing", results["start"])
         self.assertIn("--credentials-only", results["reset"])
+        self.assertIn("ZIP", results["restore"])
+        self.assertIn("DEST", results["restore"])
 
     def test_archive_help_documents_directory_and_readonly_preview(self):
         # CLI-1: archive has real command-local help, without side effects.
@@ -86,7 +89,7 @@ class HelpContractTests(CloudLabEntryTestCase):
     # --- CLI-1: help loads no Playwright, runs no external command ----
     def test_help_loads_no_playwright_and_runs_nothing(self):
         # a poisoned playwright module on PYTHONPATH turns any import
-        # into a loud crash, so three exit-0 helps prove the import
+        # into a loud crash, so exit-0 helps prove the import
         # never happened; the untouched cache dir and empty gcloud log
         # prove no external command ran either
         poison = self.workdir / "poison"
@@ -95,7 +98,7 @@ class HelpContractTests(CloudLabEntryTestCase):
             'raise RuntimeError("playwright must not load for help")\n')
         env = dict(self.env, PYTHONPATH=str(poison))
         for argv in (("--help",), ("start", "--help"), ("reset", "--help"),
-                     ("archive", "--help")):
+                     ("archive", "--help"), ("restore", "--help")):
             with self.subTest(argv=argv):
                 result = run_cloud_lab(self.repo, self.scratch, env, "", *argv)
                 self.assertEqual(result.returncode, 0,
@@ -116,6 +119,10 @@ class HelpContractTests(CloudLabEntryTestCase):
                      ("reset", "--credentials-only", "my-lab"),
                      ("archive", "--no-such-flag"),
                      ("archive", "my-lab", "other-lab"),
+                     ("restore",),
+                     ("restore", "archive.zip"),
+                     ("restore", "archive.zip", "dest", "extra"),
+                     ("restore", "--no-such-flag", "archive.zip", "dest"),
                      ("start", "--tasks", "many")):
             with self.subTest(argv=argv):
                 result = self.run_cli(self.scratch, "", *argv)

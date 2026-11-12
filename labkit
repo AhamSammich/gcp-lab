@@ -4,7 +4,8 @@
 `labkit start` scaffolds a new lab into labs/<slug>/ or refreshes an
 existing one (reset, then re-scaffold); `labkit reset` clears local state
 and credentials; `labkit archive` preserves a finished lab before removing
-its source. Each command documents its own options with
+its source; `labkit restore` recovers an archive into a fresh destination.
+Each command documents its own options with
 `labkit <command> --help`, and the work itself lives
 in the cloud_lab package next to this script.
 
@@ -16,6 +17,7 @@ Run it from anywhere:
   ./labkit reset                              # current dir is the lab
   ./labkit reset my-lab --dry-run
   ./labkit archive my-lab --dry-run
+  ./labkit restore archives/my-lab--001.zip labs/my-lab-restored
 """
 
 import atexit
@@ -30,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import argparse
 
-from cloud_lab import archive, reset, start
+from cloud_lab import archive, reset, restore, start
 from cloud_lab.common import SHOW_CURSOR, YLW, RST
 
 
@@ -39,7 +41,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="labkit",
         description="One CLI for the GCP lab workflow: "
-                    "scaffold/refresh, reset, and archive labs.",
+                    "scaffold/refresh, reset, archive, and restore labs.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -70,11 +72,21 @@ def main(argv=None) -> int:
     )
     archive.add_arguments(archive_parser)
 
+    restore_parser = commands.add_parser(
+        "restore", help="recover an archive pair into a fresh destination",
+        description="Validate a version-1 archive and its matching .meta.json "
+                    "sidecar before restoring into a destination that must not "
+                    "exist. Never merge, overwrite, or modify the input pair.",
+    )
+    restore.add_arguments(restore_parser)
+
     args = parser.parse_args(argv)
     if args.command == "start":
         return start.run(args)
     if args.command == "archive":
         return archive.run(args)
+    if args.command == "restore":
+        return restore.run(args)
     # reset gets its own parser: a refused invocation must print the
     # reset usage on its way to exit 2
     return reset.run(args, reset_parser)

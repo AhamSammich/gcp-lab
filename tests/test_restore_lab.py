@@ -1,6 +1,6 @@
-"""Recovery tests for the standalone restore entry point (CLI-9).
+"""Recovery tests for labkit restore (RESTORE-1/2, formerly CLI-9).
 
-`python3 scripts/restore_lab.py ZIP DEST` must rebuild a lab tree from
+`labkit restore ZIP DEST` must rebuild a lab tree from
 a version-1 archive+sidecar pair - both the unnumbered pairs the 002
 migration wrote and the numbered <slug>--NNN.zip pairs the archive
 command will write (same version-1 metadata, different file names) -
@@ -17,8 +17,8 @@ Hermeticity (CLI-10): every fixture here is disposable. The old v1
 pair is frozen output captured from the old 002 writer using synthetic
 data; numbered pairs are hand-built from
 the version-1 constants with facts captured by this file's own
-oracle, which shares no code with the production module. Script-level
-tests run a fixture checkout's copy of scripts/restore_lab.py as a
+oracle, which shares no code with the production module. Command-level
+tests run a fixture checkout's copy of labkit as a
 subprocess with a stub-only PATH and a disposable HOME, from a cwd
 outside the checkout. No real lab, archive, credential, or cloud tool
 is ever touched.
@@ -962,9 +962,9 @@ class RestoreCleanupTests(unittest.TestCase):
 
 @unittest.skipUnless(XATTRS, "extended attributes required to build "
                              "and verify preservation pairs")
-class RestoreScriptTests(unittest.TestCase):
-    """`python3 scripts/restore_lab.py ZIP DEST` as a user runs it
-    (CLI-9), on a disposable checkout, with a stub-only PATH and a
+class RestoreCommandTests(unittest.TestCase):
+    """`labkit restore ZIP DEST` as a user runs it
+    (RESTORE-1/2), on a disposable checkout, with a stub-only PATH and a
     disposable HOME (CLI-10)."""
 
     def setUp(self):
@@ -972,7 +972,6 @@ class RestoreScriptTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.repo = make_repo(self.root)
-        # CLI-11/9/10: make_repo ships the candidate standalone restore.
         self.home = self.root / "home"
         self.env = stub_env(self.home, self.home / "gcloud.log")
 
@@ -984,16 +983,17 @@ class RestoreScriptTests(unittest.TestCase):
         return facts, zip_path
 
     def test_usage_refusal_and_success_exit_codes(self):
-        """CLI-9: wrong argument counts exit 2 before touching
+        """RESTORE-1/2: wrong argument counts exit 2 before touching
         anything, an existing destination is a refusal (exit 1, never
         merged), and the documented invocation restores an OLD
         unnumbered v1 pair with exit 0."""
         facts, zip_path = self.build_pair("legacy-lab")
+        before = pair_bytes(zip_path)
         for argv in ([], [str(zip_path)],
                      [str(zip_path), "one", "two"]):
             with self.subTest(argv=argv):
                 result = subprocess.run(
-                    ["python3", "scripts/restore_lab.py", *argv],
+                    [str(self.repo / "labkit"), "restore", *argv],
                     cwd=self.repo, env=self.env, input="",
                     capture_output=True, text=True, timeout=120)
                 self.assertEqual(result.returncode, 2)
@@ -1002,7 +1002,7 @@ class RestoreScriptTests(unittest.TestCase):
         occupied.mkdir()
         (occupied / "keep.txt").write_text("precious\n")
         result = subprocess.run(
-            ["python3", "scripts/restore_lab.py",
+            [str(self.repo / "labkit"), "restore",
              str(zip_path), str(occupied)],
             cwd=self.repo, env=self.env, input="",
             capture_output=True, text=True, timeout=120)
@@ -1011,15 +1011,16 @@ class RestoreScriptTests(unittest.TestCase):
         self.assertEqual((occupied / "keep.txt").read_text(), "precious\n")
         dest = self.root / "restored-legacy"
         result = subprocess.run(
-            ["python3", "scripts/restore_lab.py",
+            [str(self.repo / "labkit"), "restore",
              str(zip_path), str(dest)],
             cwd=self.repo, env=self.env, input="",
             capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(tree_facts(dest), facts)
+        self.assertEqual(pair_bytes(zip_path), before)
 
     def test_smoke_from_outside_a_spaced_checkout_hermetic_env(self):
-        """CLI-9 + CLI-10: the documented command restores a NUMBERED
+        """RESTORE-1/2 + CLI-10: the documented command restores a NUMBERED
         v1 pair when run from OUTSIDE the checkout, through a checkout
         path containing a space, under a stub-only PATH and a
         disposable HOME - and no cloud tool ever runs."""
@@ -1029,7 +1030,7 @@ class RestoreScriptTests(unittest.TestCase):
         facts, zip_path = self.build_pair("smoke-lab--001")
         dest = self.root / "restore destination"
         result = subprocess.run(
-            ["python3", str(self.repo / "scripts" / "restore_lab.py"),
+            [str(self.repo / "labkit"), "restore",
              str(zip_path), str(dest)],
             cwd=self.root,  # outside the checkout
             env=self.env, input="",
@@ -1039,6 +1040,51 @@ class RestoreScriptTests(unittest.TestCase):
         self.assertIn("restored", result.stdout)
         self.assertEqual(tree_facts(dest), facts)
         # hermeticity: nothing outside the stub PATH ever ran
+        self.assertFalse((self.home / "gcloud.log").exists())
+
+    def test_restore2_corrupt_pair_refused_before_destination_write(self):
+        """RESTORE-2: command-level refusal keeps the pair and destination safe."""
+        _, zip_path = self.build_pair("corrupt-lab--001")
+        zip_path.with_suffix(".meta.json").write_text("{invalid json")
+        before = pair_bytes(zip_path)
+        dest = self.root / "must-not-exist"
+        result = subprocess.run(
+            [str(self.repo / "labkit"), "restore", str(zip_path), str(dest)],
+            cwd=self.root, env=self.env, input="",
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("refused", result.stderr)
+        self.assertFalse(os.path.lexists(dest))
+        self.assertEqual(pair_bytes(zip_path), before)
+        self.assertFalse((self.home / "gcloud.log").exists())
+
+    def test_restore2_interrupt_cleans_partial_destination_and_exits_130(self):
+        """RESTORE-2: Ctrl-C during extraction keeps the pair and cleans its work."""
+        _, zip_path = self.build_pair("interrupted-lab--001")
+        before = pair_bytes(zip_path)
+        dest = self.root / "partial-destination"
+        # Inject Ctrl-C at a real extraction write, then execute the normal CLI.
+        bootstrap = """
+import os, runpy, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
+from cloud_lab import preservation
+def interrupt(*args, **kwargs):
+    raise KeyboardInterrupt
+preservation.os.symlink = interrupt
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+        result = subprocess.run(
+            ["python3", "-c", bootstrap, str(self.repo / "labkit"),
+             "restore", str(zip_path), str(dest)],
+            cwd=self.root, env=self.env, input="",
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertIn("fresh destination", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(os.path.lexists(dest))
+        self.assertEqual(pair_bytes(zip_path), before)
         self.assertFalse((self.home / "gcloud.log").exists())
 
 

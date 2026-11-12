@@ -121,7 +121,7 @@ class ArchiveTests(unittest.TestCase):
         self.lab.chmod(0o2750)
         expected, attrs = tree_facts(self.lab), xattr_facts(self.lab)
         index = (self.repo / ".git" / "index").read_bytes()
-        # CLI-11/9: the candidate fixture already ships standalone restore.
+        # RESTORE-3: guidance uses the unified CLI, with shell-safe paths.
         # CLI-11/8: final executable works from a soon-deleted lab cwd.
         result = subprocess.run([str(self.repo / "labkit"), "archive"],
                                 cwd=self.lab, env=self.env, capture_output=True,
@@ -130,9 +130,10 @@ class ArchiveTests(unittest.TestCase):
         self.assertFalse(self.lab.exists())
         self.assertEqual((self.repo / ".git" / "index").read_bytes(), index)
         commands = [shlex.split(line) for line in result.stdout.splitlines()
-                    if line.startswith(("python3 ", "cd "))]
-        restore = next(c for c in commands if c[0] == "python3")
-        self.assertTrue(all(Path(p).is_absolute() for p in restore[1:]))
+                    if line.startswith("cd ") or " restore " in line]
+        restore = next(c for c in commands if c[1] == "restore")
+        self.assertEqual(restore[:2], [str(self.repo / "labkit"), "restore"])
+        self.assertTrue(all(Path(p).is_absolute() for p in (restore[0], *restore[2:])))
         restored = subprocess.run(restore, cwd=self.away, env=self.env,
                                   capture_output=True, text=True)
         self.assertEqual(restored.returncode, 0, restored.stderr)
@@ -339,7 +340,8 @@ class ArchiveTests(unittest.TestCase):
                         self.assertIn(str(path), text)
                         path.unlink()
                 if step == "remove_source":
-                    self.assertIn("python3 ", text)
+                    # RESTORE-3: interruption guidance uses labkit restore too.
+                    self.assertIn(" restore ", text)
                     self.assertIn(str(self.lab), text)
 
     def test_cli7_changes_to_source_or_pair_before_deletion_refuse(self):
@@ -457,9 +459,10 @@ class ArchiveTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn(str(self.lab), text)
         self.assertIn("Ctrl-C", text)
-        # CLI-11/9: the candidate fixture already ships standalone restore.
+        # RESTORE-3: partial-failure recovery uses the same command as success.
         command = next(shlex.split(line) for line in text.splitlines()
-                       if line.startswith("python3 "))
+                       if " restore " in line)
+        self.assertEqual(command[:2], [str(self.repo / "labkit"), "restore"])
         result = subprocess.run(command, cwd=self.away, env=self.env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

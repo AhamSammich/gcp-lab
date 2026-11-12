@@ -18,9 +18,8 @@ Some labs also need tools such as `kubectl`. Check the individual lab instructio
 
 ```text
 gcp-lab/
-├── labkit                  # start, reset, archive: the sole CLI
+├── labkit                  # start, reset, archive, restore: the sole CLI
 ├── cloud_lab/              # shared Python implementation
-├── scripts/restore_lab.py  # standalone manual recovery
 ├── templates/              # what labkit start copies into a new lab
 │   ├── new-standard-lab/   # the standard Terraform skeleton
 │   └── new-terraform-lab/   # instructions for lab-supplied Terraform
@@ -132,12 +131,14 @@ Extended attributes are preserved for every entry: files, directories, each lab 
 To recover a lab from its archive:
 
 ```sh
-python3 scripts/restore_lab.py archives/<lab-slug>.zip /path/to/fresh-directory
+./labkit restore archives/<lab-slug>.zip /path/to/fresh-directory
 # For a numbered pair, use its exact filename instead:
-python3 scripts/restore_lab.py archives/<lab-slug>--001.zip /path/to/another-fresh-directory
+./labkit restore archives/<lab-slug>--001.zip /path/to/another-fresh-directory
 ```
 
 Keep the matching `.meta.json` beside the zip. Restore validates the complete pair before extraction and refuses any existing destination, including dangling links. It rebuilds files, directories, hidden entries, safe relative symlink targets, full permission bits (including root and directory modes and setuid/setgid/sticky bits), and extended attributes. It does not preserve ownership, timestamps, or hard-link identity. On failure or Ctrl-C, it removes only its own partial destination and reports any remnant; the input pair stays untouched. Recovery is manual into a fresh destination, never a merge into an existing lab.
+
+The former standalone restore script is retired; use `./labkit restore` instead. Run `./labkit restore --help` for arguments. Exit codes are 0 for a verified restore, 1 for refusal, 2 for invalid arguments, and 130 for Ctrl-C. Restore does not invoke cloud tools or change credentials.
 
 ## Development
 

@@ -1,5 +1,5 @@
 """The version-1 archive preservation core: entry safety, metadata
-validation, and the verified restore scripts/restore_lab.py runs.
+validation, and the verified restore labkit runs.
 
 A lab archive is a PAIR: <name>.zip carries the regular-file payloads;
 the sibling <name>.meta.json sidecar carries what a zip cannot - the

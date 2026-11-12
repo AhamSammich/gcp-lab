@@ -378,9 +378,6 @@ def make_repo(parent: Path) -> Path:
 
     # copy2 retains the source mode: never mask a non-executable launcher.
     shutil.copy2(REPO_ROOT / "labkit", repo / "labkit")
-    (repo / "scripts").mkdir()
-    shutil.copy2(REPO_ROOT / "scripts" / "restore_lab.py",
-                 repo / "scripts" / "restore_lab.py")
 
     # the shared implementation package every entry point imports
     shutil.copytree(REPO_ROOT / "cloud_lab", repo / "cloud_lab",

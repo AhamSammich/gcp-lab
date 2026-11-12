@@ -90,8 +90,10 @@ class FreshCloneTests(unittest.TestCase):
         for obsolete in ("cloud-lab", "lab-start", "lab-reset"):
             self.assertNotIn(obsolete, top)
         env = stub_env(self.workdir / "home", self.workdir / "gcloud.log")
+        # RESTORE-1/3: a fresh clone exposes restore through the sole CLI.
         for args in (("--help",), ("start", "--help"),
-                     ("reset", "--help"), ("archive", "--help")):
+                     ("reset", "--help"), ("archive", "--help"),
+                     ("restore", "--help")):
             result = subprocess.run([str(clone / "labkit"), *args],
                                     cwd=self.workdir, env=env,
                                     capture_output=True, text=True, timeout=30)
@@ -104,7 +106,7 @@ class FreshCloneTests(unittest.TestCase):
         self.assertTrue((clone / "archives" / ".gitkeep").is_file())
         self.assertEqual({p.name for p in (clone / "labs").iterdir()}, {".gitkeep"})
         self.assertEqual({p.name for p in (clone / "archives").iterdir()}, {".gitkeep"})
-        self.assertTrue((clone / "scripts" / "restore_lab.py").is_file())
+        self.assertFalse((clone / "scripts" / "restore_lab.py").exists())
         instructions = clone / "templates" / "new-terraform-lab" / "README.md"
         self.assertTrue(instructions.is_file())
         # the standard template moved with its history

@@ -5,8 +5,8 @@ that wording is manual-review material and is deliberately not
 frozen by tests. These hold only what a reader must be able to run
 or rely on:
 
-  * CLI-9: the retired one-time migration executable is gone and
-    the active README names the standalone restore script instead
+  * CLI-9/RESTORE-3: retired migration and restore scripts are gone;
+    the active README names labkit restore instead
   * CLI-11: the instructions template's relative labkit reset
     command reaches the repository root helper from inside a lab
 
@@ -32,7 +32,10 @@ class MigrationRetirementDocsTests(unittest.TestCase):
         # CLI-9 explicitly retires the one-time executable, not old pairs.
         self.assertFalse((REPO_ROOT / "scripts" / "migrate_002.py").exists())
         self.assertNotRegex(README_TEXT, r"python3 scripts/migrate_002\.py")
-        self.assertIn("python3 scripts/restore_lab.py", README_TEXT)
+        # RESTORE-3: the command replaces the script, including active docs.
+        self.assertFalse((REPO_ROOT / "scripts" / "restore_lab.py").exists())
+        self.assertNotIn("scripts/restore_lab.py", README_TEXT)
+        self.assertIn("./labkit restore", README_TEXT)
 
 
 class InstructionsTemplateDocsTests(unittest.TestCase):
