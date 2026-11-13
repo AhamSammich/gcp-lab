@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Check every invocation, not a cached Flox activation hook. Never print values.
+while IFS= read -r name; do
+    case "$name" in
+        CLOUDSDK_*|GOOGLE_APPLICATION_CREDENTIALS|KUBECONFIG)
+            echo "Refusing inherited $name. Exit other environments and unset it before activating LabKit." >&2
+            exit 1
+            ;;
+    esac
+done < <(compgen -e)
+
+if [[ $# -gt 0 && "$1" != -- ]]; then
+    echo "Usage: bash .flox/activate [-- command [args...]]" >&2
+    exit 2
+fi
+
+entry_dir=$(dirname -- "${BASH_SOURCE[0]}")
+if [[ -L "$entry_dir" ]]; then
+    echo "Refusing credential storage: .flox must not be a symlink." >&2
+    exit 1
+fi
+flox_dir=$(cd -- "$entry_dir" && pwd -P)
+root=$(dirname -- "$flox_dir")
+state="$flox_dir/credentials"
+if [[ -e "$state" || -L "$state" ]]; then
+    unsafe=$(find "$state" \( -type l -o ! -user "$(id -un)" \) -print)
+    if [[ -n "$unsafe" || ! -d "$state" ]]; then
+        echo "Refusing credential storage: expected owned directories/files without symlinks." >&2
+        exit 1
+    fi
+fi
+
+# Keep future CLI-created files private as well as these persistent directories.
+umask 077
+mkdir -p -- "$state/gcloud" "$state/kube"
+chmod 700 "$state" "$state/gcloud" "$state/kube"
+export CLOUDSDK_CONFIG="$state/gcloud"
+export GOOGLE_APPLICATION_CREDENTIALS="$CLOUDSDK_CONFIG/application_default_credentials.json"
+export KUBECONFIG="$state/kube/config"
+exec flox activate --dir "$root" "$@"

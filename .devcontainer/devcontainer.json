@@ -1,0 +1,40 @@
+{
+  "name": "LabKit (GCP Lab Environment)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+
+  "features": {
+    "ghcr.io/devcontainers/features/terraform:1": {
+      "version": "latest",
+      "tflint": "none",
+      "terragrunt": "none"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terraform.languageServer.enable": true
+      },
+      "extensions": [
+        "hashicorp.terraform",
+        "ms-python.python",
+        "googlecloudtools.cloudcode"
+      ]
+    }
+  },
+
+  "mounts": [
+    "source=labkit-gcloud-config-${devcontainerId},target=/home/vscode/.config/gcloud,type=volume"
+  ],
+
+  "containerEnv": {
+    "CLOUDSDK_CONFIG": "/home/vscode/.config/gcloud",
+    "GOOGLE_APPLICATION_CREDENTIALS": "/home/vscode/.config/gcloud/application_default_credentials.json"
+  },
+  "containerUser": "vscode",
+  "remoteUser": "vscode"
+}

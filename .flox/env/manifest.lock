@@ -1,0 +1,187 @@
+{
+  "lockfile-version": 1,
+  "manifest": {
+    "schema-version": "1.11.0",
+    "install": {
+      "google-cloud-sdk": {
+        "pkg-path": "google-cloud-sdk"
+      },
+      "kubectl": {
+        "pkg-path": "kubectl"
+      },
+      "playwright": {
+        "pkg-path": "python313Packages.playwright"
+      },
+      "python3": {
+        "pkg-path": "python313"
+      },
+      "terraform": {
+        "pkg-path": "terraform"
+      }
+    },
+    "profile": {
+      "common": "echo \"LabKit environment activated. Run './labkit start <lab-name>' to begin.\"\n"
+    },
+    "options": {
+      "systems": [
+        "aarch64-darwin"
+      ],
+      "allow": {
+        "unfree": true
+      }
+    }
+  },
+  "packages": [
+    {
+      "attr_path": "google-cloud-sdk",
+      "broken": false,
+      "derivation": "/nix/store/iqghhln2dzg8bm1nr3h3pvrx4g77y3sw-google-cloud-sdk-592.0.0.drv",
+      "description": "Tools for the google cloud platform",
+      "install_id": "google-cloud-sdk",
+      "license": "Unspecified free software license",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "google-cloud-sdk-592.0.0",
+      "pname": "google-cloud-sdk",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T05:47:25.554727Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "592.0.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/izvlgmmpqpw9nv4k3q89wd0fhh7gihpn-google-cloud-sdk-592.0.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "kubectl",
+      "broken": false,
+      "derivation": "/nix/store/8vrf307kv5aydvfy3wnp90dwx2g8km19-kubectl-1.37.2.drv",
+      "description": "Kubernetes CLI",
+      "install_id": "kubectl",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "kubectl-1.37.2",
+      "pname": "kubectl",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T05:47:25.636972Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.37.2",
+      "outputs_to_install": [
+        "man",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "convert": "/nix/store/g928xxjq6272vic3lr8p5ciibl1r1y2s-kubectl-1.37.2-convert",
+        "man": "/nix/store/wdjwim08zx110lv8jc0m0id96ygw3yvr-kubectl-1.37.2-man",
+        "out": "/nix/store/mgl42b66mz4yy9hc57bpnpiqqxif13x8-kubectl-1.37.2"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "python313Packages.playwright",
+      "broken": false,
+      "derivation": "/nix/store/g38grqjfx26wzhg4ps1b6avxj4wb7k78-python3.13-playwright-1.64.0.drv",
+      "description": "Python version of the Playwright testing and automation library",
+      "install_id": "playwright",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "python3.13-playwright-1.64.0",
+      "pname": "playwright",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T05:47:25.733033Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.64.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "dist": "/nix/store/7dkszds631576p3ndxa9s741gafnx3ap-python3.13-playwright-1.64.0-dist",
+        "out": "/nix/store/qqjaap3r7zbfbvzai1wyzacfcnwk6v25-python3.13-playwright-1.64.0"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "python313",
+      "broken": false,
+      "derivation": "/nix/store/zrvl3k815qvlfi543i8j5p8is9i4pdr8-python3-3.13.18.drv",
+      "description": "High-level dynamically-typed programming language",
+      "install_id": "python3",
+      "license": "Python-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "python3-3.13.18",
+      "pname": "python313",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T05:47:25.696433Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "python3-3.13.18",
+      "outputs_to_install": [
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/h6hvazn2xcwak078z715jclval02d3dl-python3-3.13.18"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "terraform",
+      "broken": false,
+      "derivation": "/nix/store/irv02pr45n0r5njbxcfsq257848yv77f-terraform-1.17.1.drv",
+      "description": "Tool for building, changing, and versioning infrastructure",
+      "install_id": "terraform",
+      "license": "BUSL-1.1",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "terraform-1.17.1",
+      "pname": "terraform",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T05:47:25.846345Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": true,
+      "version": "1.17.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/b6x2zyc515li00rsg16zxxayzri1npiy-terraform-1.17.1"
+      },
+      "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+schema-version = "1.11.0"
+
+[install]
+python3.pkg-path = "python313"
+playwright.pkg-path = "python313Packages.playwright"
+terraform.pkg-path = "terraform"
+google-cloud-sdk.pkg-path = "google-cloud-sdk"
+kubectl.pkg-path = "kubectl"
+
+[profile]
+common = '''
+echo "LabKit environment activated. Run './labkit start <lab-name>' to begin."
+'''
+
+[options]
+# Native smoke-tested target; add platforms only after their runtime checks.
+systems = ["aarch64-darwin"]
+allow.unfree = true

@@ -1,6 +1,6 @@
 # LabKit
 
-A scaffolding tool for hands-on Google Cloud Skills labs. Clone or fork it, run `./labkit start` with a new lab name and a lab type, and it lays out a working directory under `labs/`, fills in the lab's tasks and variables, and wires up the lab's tooling: a standard notes lab, a Terraform workspace, or a step-by-step CLI lab.
+A scaffolding tool for hands-on Google Cloud Skills labs. Clone or fork it, run `./labkit start` with a new lab name and a lab type, and it lays out a working directory under `labs/`: a standard notes lab, a Terraform workspace, or a step-by-step CLI lab. It can prefill instructions and variables when it can access the lab page; otherwise, it asks for values and leaves placeholders.
 
 The repository ships only the tool, its templates, and tests. Your lab work stays local under ignored `labs/<slug>/` directories. Archived work goes to ignored numbered pairs such as `archives/<slug>--001.zip` and `archives/<slug>--001.meta.json`. A fresh clone contains the tool and two empty collections, never anyone's lab solutions or archive payloads.
 
@@ -8,16 +8,20 @@ These are learning exercises, not production-ready infrastructure modules. Use t
 
 ## Prerequisites
 
-- Git and Python 3.10 or newer.
-- The [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) on your `PATH`; for `--type terraform` labs, the [Terraform CLI](https://developer.hashicorp.com/terraform/install) as well.
-- A running lab with its project ID, assigned region, zone, and student credentials.
+Choose an environment and follow its setup guide:
 
-Some labs also need tools such as `kubectl`. Check the individual lab instructions before starting.
+- [Local Dev Container](.devcontainer/README.md): VS Code with Docker, including cloud tools. Authenticated lab-page fetching is not supported in this headless setup.
+- [Native Flox environment](.flox/README.md): Apple Silicon macOS, including cloud tools and Python Playwright for browser-assisted lab fetching.
+- Manual installation: Git, Python 3.10+, [gcloud](https://cloud.google.com/sdk/docs/install), and [Terraform](https://developer.hashicorp.com/terraform/install) for Terraform labs. Some labs need additional tools such as `kubectl`.
+
+In all cases, use the running lab's project ID, assigned region and zone, and student credentials. Website sign-in for lab instructions is separate from gcloud authentication. The environment guides cover authentication, credential storage, and limitations.
 
 ## Repository layout
 
 ```text
 gcp-lab/
+├── .devcontainer/          # optional container development environment
+├── .flox/                  # optional declarative Flox environment
 ├── labkit                  # start, reset, archive, restore: the sole CLI
 ├── labkit_cli/              # shared Python implementation
 ├── templates/              # lab starting points; each is wired to labkit start --type
@@ -156,4 +160,4 @@ The former standalone restore script is retired; use `./labkit restore` instead.
 python3 -m unittest discover -s tests -v
 ```
 
-The tests use temporary directories and a stub gcloud command, so they do not require cloud access or change your real credentials.
+The ordinary suite uses temporary directories and stub cloud commands; it needs neither cloud access nor Docker/Flox and does not change real credentials. Environment runtime tests are opt-in. Their commands, validation history, and known coverage gaps are recorded in the [devcontainer plan](.plans/006-local-devcontainer.md) and [Flox plan](.plans/007-flox-environment.md).
