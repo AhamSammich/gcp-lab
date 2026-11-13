@@ -11,17 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import build_lab_dir, make_repo, run_cli, snapshot, stub_env
-
-# every question answered by flags: a run with closed stdin and no
-# prompts to answer
-FULL_FLAGS = (
-    "--title", "Landing Zone Challenge",
-    "--tasks", "4",
-    "--project", "qwiklabs-gcp-01-newlab",
-    "--zone", "us-central1-a",
-    "--skip-init", "--skip-auth",
-)
+from util import FULL_FLAGS, build_lab_dir, make_repo, run_cli, snapshot, stub_env
 
 SLUG = "landing-zone-challenge"
 
@@ -107,16 +97,26 @@ class RefreshCliTests(unittest.TestCase):
         self.assertFalse((self.workdir / "fresh-lab").exists())
         self.assertNotIn("LAB RESET", result.stdout)
 
-    def test_not_a_lab_dir_refuses_use(self):
+    def test_untyped_dir_refused_for_use(self):
+        # AC12 (the retained original arbitrary-directory safeguard,
+        # under the legacy-fallback policy): missing metadata alone is
+        # not evidence that a directory is a lab - a notes-only
+        # directory with no .tf files is hard-refused, the refusal
+        # explains itself, nothing is reset or rewritten, no fresh
+        # scaffold appears, and no credential call runs
         not_a_lab = self.repo / "labs" / "random-dir"
         not_a_lab.mkdir()
         (not_a_lab / "notes.txt").write_text("not a lab\n")
-        result = self.run_start("u\n\nfresh-lab\ny\n",
-                                "random-dir", *FULL_FLAGS)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("doesn't look like a lab dir", result.stdout)
+        result = self.run_start("u\n", "random-dir", *FULL_FLAGS)
+        self.assertNotEqual(result.returncode, 0,
+                            result.stdout + result.stderr)
+        self.assertIn("no .tf files", result.stderr)
         self.assertEqual((not_a_lab / "notes.txt").read_text(), "not a lab\n")
-        self.assertTrue((self.repo / "labs" / "fresh-lab" / "task1.tf").exists())
+        self.assertFalse((self.repo / "labs" / "fresh-lab").exists(),
+                         "the refusal fell through to a fresh scaffold")
+        self.assertFalse(self.gcloud_log.exists()
+                         and self.gcloud_log.read_text().strip(),
+                         "gcloud was invoked for a refused refresh")
 
     def test_dangling_task_symlink_referent_untouched(self):
         # a user's dangling task1.tf symlink is an existing entry:

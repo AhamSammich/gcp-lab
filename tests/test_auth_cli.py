@@ -29,9 +29,12 @@ class AuthCliTests(unittest.TestCase):
 
     def test_auth_is_one_login(self):
         # CLI-2: exactly one login followed by the requested config values.
+        # --type terraform: the flags hand-answer the new type prompt
+        # so this regression stays pinned to the terraform workflow.
         result = run_cli(
             self.repo, self.workdir, self.env, ANSWERS,
             "auth-lab",
+            "--type", "terraform",
             "--title", "Auth Lab",
             "--tasks", "1",
             "--project", PROJECT,

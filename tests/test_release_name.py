@@ -16,7 +16,8 @@ class ReleaseNameTests(unittest.TestCase):
 
     def test_cli11_active_docs_use_final_commands(self):
         readme = (REPO_ROOT / "README.md").read_text()
-        self.assertTrue(readme.startswith("# labkit\n"))
+        # BRAND-1: human display name; command examples remain lowercase.
+        self.assertTrue(readme.startswith("# LabKit\n"))
         for command in ("./labkit start", "./labkit reset",
                         "./labkit archive", "--credentials-only", "--use-existing"):
             self.assertIn(command, readme)
@@ -33,7 +34,8 @@ class ReleaseNameTests(unittest.TestCase):
                          "single writer", "concurrent", "crash-atomic",
                          "fresh destination", "input pair stays untouched",
                          "does not destroy", "does not sign",
-                         "~/.cache/lab-start/", "lab-start.log", "lab-reset.log"):
+                         # CACHE-1: new root, unchanged log filenames.
+                         "~/.cache/labkit/", "lab-start.log", "lab-reset.log"):
             self.assertIn(guidance, text, guidance)
         finishing = text[text.index("## Finish a lab"):text.index("## Archive recovery")]
         self.assertLess(finishing.index("terraform destroy"),

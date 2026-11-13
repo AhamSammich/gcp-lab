@@ -531,7 +531,8 @@ class CredentialsOnlyResetTests(unittest.TestCase):
         self.home = self.workdir / "home"
         self.gcloud_log = self.workdir / "gcloud.log"
         self.env = stub_env(self.home, self.gcloud_log)
-        self.reset_log = self.home / ".cache" / "lab-start" / "lab-reset.log"
+        # CACHE-1: reset keeps its log filename under the shared new root.
+        self.reset_log = self.home / ".cache" / "labkit" / "lab-reset.log"
 
     def run_reset_cli(self, cwd, *argv):
         return run_reset(self.repo, cwd, self.env, *argv)

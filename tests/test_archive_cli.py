@@ -16,7 +16,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from util import (REPO_ROOT, load_cloud_lab, make_git_repo, run_cloud_lab,
+from util import (REPO_ROOT, load_labkit_cli, make_git_repo, run_labkit_cli,
                   run_git, set_xattr, stub_env)
 from test_restore_lab import tree_facts, xattr_facts
 
@@ -38,7 +38,7 @@ class ArchiveTests(unittest.TestCase):
         self.away.mkdir()
 
     def cli(self, *args, cwd=None, env=None):
-        return run_cloud_lab(self.repo, cwd or self.away, env or self.env,
+        return run_labkit_cli(self.repo, cwd or self.away, env or self.env,
                              "", "archive", *args)
 
     def pair(self, number=1):
@@ -52,7 +52,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertFalse((self.home / ".cache").exists())
 
     def inprocess(self, action=None, target=None):
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         output = io.StringIO()
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 contextlib.redirect_stdout(output), \
@@ -350,7 +350,7 @@ class ArchiveTests(unittest.TestCase):
         for change in ("source", "metadata", "payload", "deleted-sidecar",
                        "invalid-json", "invalid-entry"):
             with self.subTest(change=change):
-                module = load_cloud_lab(self.repo, "archive")
+                module = load_labkit_cli(self.repo, "archive")
                 real_verify = module.verify_pair
                 calls = 0
 
@@ -385,7 +385,7 @@ class ArchiveTests(unittest.TestCase):
                     (self.lab / "new").unlink()
 
     def test_cli7_collision_and_replaced_artifact_never_unlinked(self):
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         real_write = module.write_pair
 
         def collide(*args):
@@ -442,7 +442,7 @@ class ArchiveTests(unittest.TestCase):
         # complete pair must remain and guidance must run outside the repo.
         (self.lab / "first").write_text("one")
         (self.lab / "second").write_text("two")
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         unlink = os.unlink
 
         def interrupt_after_unlink(path, *args, **kwargs):
@@ -472,7 +472,7 @@ class ArchiveTests(unittest.TestCase):
 
     def test_type2_cleanup_and_guidance_failure_keep_pair_and_original_error(self):
         # TYPE-2: reporting cannot mask a destructive failure or remove recovery.
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         output = io.StringIO()
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(module, "remove_source", side_effect=OSError("cleanup sentinel")), \
@@ -489,7 +489,7 @@ class ArchiveTests(unittest.TestCase):
     def test_cli7_interrupt_at_exclusive_creation_keeps_source_cleans_owned_only(self):
         # CLI-5/7: SIGINT in open/ownership-registration gap is deferred;
         # sidecar collision remains untouched if its creation is interrupted.
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         real_open = os.open
         for selected in self.pair():
             with self.subTest(selected=selected):
@@ -509,7 +509,7 @@ class ArchiveTests(unittest.TestCase):
         # CLI-6: both hashing and writing bound every source read; force
         # ZIP64 at a tiny limit so this is exercised without huge fixtures.
         (self.lab / "large").write_bytes(b"payload" * 10000)
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         real_open = open
         sizes = []
 
@@ -554,7 +554,7 @@ class ArchiveTests(unittest.TestCase):
         for change in ("root-mode", "root-xattrs", "entry-type", "entry-set",
                        "file-mode", "zip-mode", "extra-payload", "bad-hash"):
             with self.subTest(change=change):
-                module = load_cloud_lab(self.repo, "archive")
+                module = load_labkit_cli(self.repo, "archive")
                 write = module.write_pair
 
                 def changed_pair(*args):
@@ -592,7 +592,7 @@ class ArchiveTests(unittest.TestCase):
         (self.lab / "notes").write_text("precious work")
         for sidecar in (False, True):
             with self.subTest(sidecar=sidecar):
-                module = load_cloud_lab(self.repo, "archive")
+                module = load_labkit_cli(self.repo, "archive")
                 patch = (mock.patch.object(module.json, "dumps",
                                           side_effect=OSError("sidecar write cause"))
                          if sidecar else
@@ -607,7 +607,7 @@ class ArchiveTests(unittest.TestCase):
                 self.assert_pristine()
 
     def test_cli7_cleanup_failure_reports_exact_owned_remnants_without_masking_cause(self):
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         text = io.StringIO()
         with mock.patch.dict(os.environ, self.env, clear=True), \
                 mock.patch.object(module, "verify_pair", side_effect=OSError("original cause")), \
@@ -621,7 +621,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn("cleanup cause", text.getvalue())
 
     def test_cli7_sidecar_collision_preserves_collision_cleans_only_own_zip(self):
-        module = load_cloud_lab(self.repo, "archive")
+        module = load_labkit_cli(self.repo, "archive")
         real_write = module.write_pair
 
         def collide(*args):

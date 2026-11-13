@@ -1,13 +1,14 @@
 """Component tests: refresh = reset + re-scaffold.
 
-Module-import style (the cloud_lab implementation loaded from the
+Module-import style (the labkit_cli implementation loaded from the
 isolated fixture repo, the way the launchers import it), temp dirs,
 and a stub gcloud on PATH - the real credentials and config are never
 touched. The fixture lab lives under the fixture repo's labs/ (a
 managed lab, as the refresh flow now requires) and mirrors
 landing-zone-challenge/: populated task files, a user module dir,
 stale tfstate/tfvars. Template parity is asserted against the
-relocated templates/new-standard-lab.
+relocated templates/new-terraform-lab - the type this fixture
+records, per plan 005's type-aware identity.
 """
 
 import os
@@ -38,7 +39,7 @@ class RefreshComponentTests(unittest.TestCase):
         root = Path(self._tmp.name)
         self.repo = make_repo(root)  # fixture checkout, never the real one
         self.lab_start = load_lab_start(self.repo)
-        self.template = self.repo / "templates" / "new-standard-lab"
+        self.template = self.repo / "templates" / "new-terraform-lab"
         self.home = root / "home"
         self.gcloud_log = root / "gcloud.log"
         # a managed lab: the only kind the refresh flow accepts
@@ -59,7 +60,8 @@ class RefreshComponentTests(unittest.TestCase):
         """The full composition: the reset half, then scaffold(refresh=True)."""
         self.run_reset()
         created = self.lab_start.scaffold(
-            self.lab, "Landing Zone Challenge", "https://example.com/lab",
+            self.lab, "terraform", "Landing Zone Challenge",
+            "https://example.com/lab",
             None, 4, [{"n": 1, "title": "Set up"}],
             NEW_PROJECT, "us-central1", "us-central1-a",
             extras=[{"name": "bucket_name", "description": "lab bucket",
@@ -84,10 +86,16 @@ class RefreshComponentTests(unittest.TestCase):
         created = self.refresh()
         task3 = self.lab / "task3.tf"
         self.assertTrue(task3.exists())
-        self.assertEqual(
-            task3.read_text(),
-            self.lab_start.TASK_FILE_TEMPLATE.format(n=3, title=""),
-        )
+        # the stub is the shipped exemplar with only its number and
+        # title markers filled (the title slot is read back out of
+        # the stub's own heading, so this pins structure, not prose)
+        exemplar = (self.template / "task1.tf").read_text()
+        heading = task3.read_text().splitlines()[1]
+        self.assertTrue(heading.startswith("# Task 3"), heading)
+        title = heading.split(": ", 1)[1]
+        expected = (exemplar.replace("__TASK_N__", "3")
+                    .replace("__TASK_TITLE__", title))
+        self.assertEqual(task3.read_text(), expected)
         self.assertIn(task3, created)
 
     # --- stale state goes, fresh values arrive ---------------------------
@@ -108,10 +116,8 @@ class RefreshComponentTests(unittest.TestCase):
     def test_templates_and_variables_rewritten(self):
         self.refresh()
         # backend.tf/providers.tf are copied verbatim from the
-        # relocated standard template
-        for name in self.lab_start.TEMPLATE_FILES:
-            if name in ("README.md", "variables.tf"):
-                continue  # these get content added on top of the template
+        # terraform template this lab's type generates from
+        for name in ("backend.tf", "providers.tf"):
             self.assertEqual((self.lab / name).read_bytes(),
                              (self.template / name).read_bytes(),
                              f"{name} should match the template after refresh")
@@ -189,9 +195,9 @@ class ScaffoldDestinationTests(unittest.TestCase):
         (self.lab / "backend.tf").mkdir()
         with self.assertRaises(OSError):
             self.lab_start.scaffold(
-                self.lab, "Landing Zone Challenge", None, None, 4, [],
-                "qwiklabs-gcp-01-newlab", "us-central1", "us-central1-a",
-                refresh=True,
+                self.lab, "terraform", "Landing Zone Challenge", None, None,
+                4, [], "qwiklabs-gcp-01-newlab", "us-central1",
+                "us-central1-a", refresh=True,
             )
         # nothing was copied INTO the directory: no nested
         # backend.tf/backend.tf exists, through a symlink or not
@@ -209,18 +215,43 @@ class RefreshHelperTests(unittest.TestCase):
         self.lab_start = load_lab_start(self.repo)
         self.lab = build_lab_dir(self.repo / "labs", "landing-zone-challenge")
 
-    def test_looks_like_lab_dir(self):
-        self.assertTrue(self.lab_start.looks_like_lab_dir(self.lab))
-        empty = self.root / "empty"
+    def test_recorded_lab_type_comes_from_metadata_not_file_layout(self):
+        # AC10/AC12: refresh identity is the recorded type in
+        # .labkit-type, never a .tf file-layout inference - a .tf
+        # directory without the record is legacy (the caller's fixed
+        # standard fallback), and malformed metadata is a refusal
+        # that leaves the file alone
+        self.assertEqual(self.lab_start.recorded_lab_type(self.lab),
+                         "terraform")
+        legacy = self.root / "legacy-lab"
+        legacy.mkdir()
+        (legacy / "task1.tf").write_text("# a .tf file is not a type record\n")
+        self.assertIsNone(self.lab_start.recorded_lab_type(legacy))
+        empty = self.root / "empty-lab"
         empty.mkdir()
-        self.assertFalse(self.lab_start.looks_like_lab_dir(empty))
+        self.assertIsNone(self.lab_start.recorded_lab_type(empty))
+        # malformed metadata is a refusal that leaves the file alone
+        (legacy / ".labkit-type").write_text("puppet\n")
+        with self.assertRaises(SystemExit):
+            self.lab_start.recorded_lab_type(legacy)
+        self.assertEqual((legacy / ".labkit-type").read_bytes(), b"puppet\n")
 
     def test_refresh_keeps_lists_user_work_only(self):
-        keeps = self.lab_start.refresh_keeps(self.lab)
+        # AC12: for the recorded terraform type, keeps excludes what
+        # the scaffold rewrites and the reset deletes; everything
+        # else - including a legacy lab's foreign-type files - is user
+        # work the preview must name
         self.assertEqual(
-            keeps, ["shared-vpc/", "task1.tf", "task2.tf",
-                    "task3.tf", "task4.tf"])
-        # everything the scaffold rewrites or the reset deletes is excluded
+            self.lab_start.refresh_keeps(self.lab, "terraform"),
+            ["shared-vpc/", "task1.tf", "task2.tf",
+             "task3.tf", "task4.tf"])
+        # the same lab refreshed as standard keeps its Terraform files:
+        # only README.md and the record are generated for that type
+        self.assertEqual(
+            self.lab_start.refresh_keeps(self.lab, "standard"),
+            ["backend.tf", "providers.tf", "shared-vpc/",
+             "task1.tf", "task2.tf", "task3.tf", "task4.tf",
+             "variables.tf"])
 
     def test_check_fresh_slug_rejects_existing(self):
         # the collision validator maps to the managed labs/ directory,

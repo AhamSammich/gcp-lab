@@ -42,7 +42,7 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from util import (REPO_ROOT, XATTRS, list_xattrs, load_cloud_lab,
+from util import (REPO_ROOT, XATTRS, list_xattrs, load_labkit_cli,
                   make_repo, set_xattr, stub_env)
 
 from old_v1_fixture import ZIP_BYTES, META_BYTES
@@ -53,7 +53,7 @@ def setUpModule():
     checkout_tmp = tempfile.TemporaryDirectory(prefix="restore-checkout-")
     unittest.addModuleCleanup(checkout_tmp.cleanup)
     _checkout = make_repo(Path(checkout_tmp.name))
-    preservation = load_cloud_lab(_checkout, "preservation")
+    preservation = load_labkit_cli(_checkout, "preservation")
 
 
 # --- the version-1 pair format, pinned as literals -------------------------
@@ -78,7 +78,7 @@ def tree_facts(root: Path) -> dict:
 
     Entry type, FULL permission bits (setuid/setgid/sticky included),
     symlink target, and content hash, captured without following any
-    symlink. Shares no code with cloud_lab.preservation, so comparing
+    symlink. Shares no code with labkit_cli.preservation, so comparing
     a restored tree against these facts is a round-trip check the
     production verifier cannot influence.
     """
@@ -1068,7 +1068,7 @@ class RestoreCommandTests(unittest.TestCase):
 import os, runpy, sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(sys.argv[1]))
-from cloud_lab import preservation
+from labkit_cli import preservation
 def interrupt(*args, **kwargs):
     raise KeyboardInterrupt
 preservation.os.symlink = interrupt

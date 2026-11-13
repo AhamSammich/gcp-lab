@@ -23,7 +23,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import (build_lab_dir, make_repo, run_cloud_lab, snapshot,
+from util import (build_lab_dir, make_repo, run_labkit_cli, snapshot,
                   stub_env)
 
 
@@ -38,15 +38,17 @@ class CloudLabEntryTestCase(unittest.TestCase):
         self.home = self.workdir / "home"
         self.gcloud_log = self.workdir / "gcloud.log"
         self.env = stub_env(self.home, self.gcloud_log)
-        self.cache = self.home / ".cache" / "lab-start"
+        # CACHE-1/2: neither cache root may be written during parsing.
+        self.cache = self.home / ".cache" / "labkit"
 
     def run_cli(self, cwd, stdin_text, *argv):
-        return run_cloud_lab(self.repo, cwd, self.env, stdin_text, *argv)
+        return run_labkit_cli(self.repo, cwd, self.env, stdin_text, *argv)
 
     def assert_nothing_ran(self):
         """A help or a refused run leaves no trace: no log dir, no gcloud."""
         self.assertFalse(self.cache.exists(),
                          "the run wrote the cache/log directory")
+        self.assertFalse((self.home / ".cache" / "lab-start").exists())
         self.assertFalse(self.gcloud_log.exists()
                          and self.gcloud_log.read_text().strip(),
                          "gcloud was invoked")
@@ -58,7 +60,9 @@ class HelpContractTests(CloudLabEntryTestCase):
     def test_top_level_help_lists_the_commands(self):
         result = self.run_cli(self.scratch, "", "--help")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("usage:", result.stdout)
+        # BRAND-1: display name changes, argparse program stays lowercase.
+        self.assertIn("usage: labkit", result.stdout)
+        self.assertIn("LabKit", result.stdout)
         for command in ("start", "reset", "archive", "restore"):
             self.assertIn(command, result.stdout)
 
@@ -100,7 +104,7 @@ class HelpContractTests(CloudLabEntryTestCase):
         for argv in (("--help",), ("start", "--help"), ("reset", "--help"),
                      ("archive", "--help"), ("restore", "--help")):
             with self.subTest(argv=argv):
-                result = run_cloud_lab(self.repo, self.scratch, env, "", *argv)
+                result = run_labkit_cli(self.repo, self.scratch, env, "", *argv)
                 self.assertEqual(result.returncode, 0,
                                  result.stdout + result.stderr)
                 self.assertNotIn("Traceback", result.stdout + result.stderr)

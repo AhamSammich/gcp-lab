@@ -10,7 +10,7 @@ import types
 import unittest
 from unittest import mock
 
-from util import load_cloud_lab, make_repo, stub_env
+from util import load_labkit_cli, make_repo, stub_env
 
 
 class TypeBoundaryTests(unittest.TestCase):
@@ -25,7 +25,7 @@ class TypeBoundaryTests(unittest.TestCase):
         self.repo = make_repo(self.root)
 
     def test_type2_required_optional_and_eof_validation(self):
-        start = load_cloud_lab(self.repo, "start")
+        start = load_labkit_cli(self.repo, "start")
         with contextlib.redirect_stdout(io.StringIO()):
             with mock.patch("builtins.input", return_value=""):
                 self.assertIsNone(start.ask("Optional", optional=True))
@@ -41,7 +41,7 @@ class TypeBoundaryTests(unittest.TestCase):
                     start.ask("Default", default="bad", validate=lambda s: "invalid")
 
     def test_type2_spinner_propagates_original_exception(self):
-        common = load_cloud_lab(self.repo, "common")
+        common = load_labkit_cli(self.repo, "common")
         error = RuntimeError("operation failed")
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError) as raised:
             with common.Spinner("operation"):
@@ -49,7 +49,7 @@ class TypeBoundaryTests(unittest.TestCase):
         self.assertIs(raised.exception, error)
 
     def test_type2_playwright_optional_and_repository_fallback(self):
-        start = load_cloud_lab(self.repo, "start")
+        start = load_labkit_cli(self.repo, "start")
         site = self.repo / ".venv/lib/python3.10/site-packages"
         site.mkdir(parents=True)
         factory = mock.Mock()
@@ -88,7 +88,7 @@ class TypeBoundaryTests(unittest.TestCase):
         factory.assert_not_called()
 
     def test_type2_playwright_missing_export_is_optional_and_cleans_failed_fallback(self):
-        start = load_cloud_lab(self.repo, "start")
+        start = load_labkit_cli(self.repo, "start")
         package = types.ModuleType("playwright")
         package.__path__ = []
         api = types.ModuleType("playwright.sync_api")
@@ -102,7 +102,7 @@ class TypeBoundaryTests(unittest.TestCase):
             self.assertEqual(sys.path, original_path)
 
     def test_type2_playwright_missing_export_still_tries_repository_factory(self):
-        start = load_cloud_lab(self.repo, "start")
+        start = load_labkit_cli(self.repo, "start")
         site = self.repo / ".venv/lib/python3.10/site-packages"
         fake = site / "playwright"
         fake.mkdir(parents=True)
@@ -129,7 +129,7 @@ class TypeBoundaryTests(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
 
     def test_type2_playwright_import_execution_errors_are_not_missing_exports(self):
-        start = load_cloud_lab(self.repo, "start")
+        start = load_labkit_cli(self.repo, "start")
         error = AttributeError("module initialization failed")
         with mock.patch.object(start.importlib, "import_module", side_effect=error):
             with self.assertRaises(AttributeError) as raised:
@@ -137,7 +137,7 @@ class TypeBoundaryTests(unittest.TestCase):
         self.assertIs(raised.exception, error)
 
     def test_type2_os_xattrs_preserve_nofollow_and_fail_closed(self):
-        p = load_cloud_lab(self.repo, "preservation")
+        p = load_labkit_cli(self.repo, "preservation")
         path = self.root / "link"
         with mock.patch.object(p, "_XATTR", "os"), \
                 mock.patch.object(p.os, "listxattr", create=True, return_value=["user.mark"]) as listing, \

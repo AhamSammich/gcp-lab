@@ -1,4 +1,4 @@
-"""cloud_lab.reset - tear a finished lab back down to a clean slate.
+"""labkit_cli.reset - tear a finished lab back down to a clean slate.
 
 The inverse of the scaffold: remove the lab's terraform state and
 tfvars, unset gcloud's project/region/zone config, and revoke the
@@ -45,7 +45,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from cloud_lab.common import (CYN, GRN, RED, RST, Spinner, YLW, banner,
+from labkit_cli.common import (CYN, GRN, RED, RST, Spinner, YLW, banner,
                               cache_dir, resolve_lab_target)
 
 LOG = logging.getLogger("lab-reset")

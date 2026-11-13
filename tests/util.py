@@ -2,12 +2,12 @@
 
 Hermetic by construction: `gcloud` is a stub script that logs its
 calls instead of touching real credentials, HOME is redirected into a
-tempdir (so the tools' ~/.cache/lab-start logs land there too), and
+tempdir (so the tools' ~/.cache/labkit logs land there too), and
 terraform is never invoked (--skip-init).
 
 Phase 002 makes the suite repo-hermetic as well: `make_repo()` builds
 an isolated scaffolding-tool checkout (the labkit CLI,
-the shared cloud_lab implementation package, and
+the shared labkit_cli implementation package, and
 the template trees) inside a tempdir. CLI tests run the fixture's
 scripts, never the real checkout, so no test can write into the
 actual repository's `labs/` no matter how target resolution changes.
@@ -148,13 +148,11 @@ def set_xattr(path, name: bytes, value: bytes) -> None:
         errno = ctypes.get_errno()
         raise OSError(errno, os.strerror(errno), str(path))
 
-# the four files the standard template carries (labkit start copies
-# them verbatim into every new lab)
-TEMPLATE_FILES = ("README.md", "backend.tf", "providers.tf", "variables.tf")
-
 # every question answered by flags: a run with closed stdin and no
-# prompts to answer
+# prompts to answer. --type keeps the suite's existing Terraform CLI
+# regressions running against the terraform workflow they pin.
 FULL_FLAGS = (
+    "--type", "terraform",
     "--title", "Landing Zone Challenge",
     "--tasks", "4",
     "--project", "qwiklabs-gcp-01-newlab",
@@ -182,12 +180,29 @@ exit 0
 """
 
 
-def load_cloud_lab(repo_root: Path, module: str):
-    """Import cloud_lab.<module> anchored at repo_root - fresh each call.
+def noncomment_lines(path: Path) -> list[str]:
+    """The lines a shell or Terraform parser would treat as content:
+    non-blank, non-comment.
+
+    Comment-only guidance and blank workspace yield [], which is the
+    point: a shipped or generated task stub must carry nothing that
+    runs or declares. (A shell shebang starts with '#' and counts as
+    a comment here, exactly as intended.)
+    """
+    lines = []
+    for raw in path.read_text().splitlines():
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("#"):
+            lines.append(stripped)
+    return lines
+
+
+def load_labkit_cli(repo_root: Path, module: str):
+    """Import labkit_cli.<module> anchored at repo_root - fresh each call.
 
     The implementation modules reach each other through ordinary
     package imports, so the checkout under test goes on sys.path and
-    the package is imported by its real name. Any cloud_lab modules
+    the package is imported by its real name. Any labkit_cli modules
     already imported are dropped first: an import cached from another
     checkout would pin THAT checkout's REPO_ROOT on every later load,
     and each test's fixture must be anchored at its own repo. Bytecode
@@ -195,14 +210,14 @@ def load_cloud_lab(repo_root: Path, module: str):
     __pycache__ into the checkout under test.
     """
     for name in [n for n in sys.modules
-                 if n == "cloud_lab" or n.startswith("cloud_lab.")]:
+                 if n == "labkit_cli" or n.startswith("labkit_cli.")]:
         del sys.modules[name]
     repo = str(repo_root)
     sys.path.insert(0, repo)
     wrote_bytecode = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
     try:
-        return importlib.import_module(f"cloud_lab.{module}")
+        return importlib.import_module(f"labkit_cli.{module}")
     finally:
         sys.dont_write_bytecode = wrote_bytecode
         sys.path.remove(repo)
@@ -210,12 +225,12 @@ def load_cloud_lab(repo_root: Path, module: str):
 
 def load_lab_start(repo_root: Path = REPO_ROOT):
     """The start implementation module, as labkit start runs it."""
-    return load_cloud_lab(repo_root, "start")
+    return load_labkit_cli(repo_root, "start")
 
 
 def load_lab_reset(repo_root: Path = REPO_ROOT):
     """The reset implementation module, as labkit reset runs it."""
-    return load_cloud_lab(repo_root, "reset")
+    return load_labkit_cli(repo_root, "reset")
 
 
 def stub_env(home: Path, gcloud_log: Path) -> dict:
@@ -245,9 +260,16 @@ def stub_env(home: Path, gcloud_log: Path) -> dict:
 
 
 def build_lab_dir(parent: Path, slug: str = "landing-zone-challenge") -> Path:
-    """A half-finished lab dir: populated tasks, a user module, stale state."""
+    """A half-finished lab dir: populated tasks, a user module, stale state.
+
+    Carries the recorded type of a lab the typed workflow created
+    (.labkit-type), so preservation and refresh regressions exercise
+    the managed flow. Tests that need a genuinely untyped legacy lab
+    remove that file explicitly.
+    """
     lab = parent / slug
     lab.mkdir()
+    (lab / ".labkit-type").write_text("terraform\n")
     (lab / "task1.tf").write_text(
         '# Task 1\nresource "google_compute_network" "net" {\n  name = "vpc"\n}\n')
     (lab / "task2.tf").write_text("# Task 2\n# half done\n")
@@ -317,7 +339,7 @@ def run_reset(repo: Path, cwd: Path, env: dict, *argv: str):
     )
 
 
-def run_cloud_lab(repo: Path, cwd: Path, env: dict, stdin_text: str, *argv: str):
+def run_labkit_cli(repo: Path, cwd: Path, env: dict, stdin_text: str, *argv: str):
     """CLI-11/1: run the fixture's final command (internal helper name only)."""
     return subprocess.run(
         [sys.executable, str(repo / "labkit"), *argv],
@@ -365,13 +387,13 @@ def make_repo(parent: Path) -> Path:
     """An isolated scaffolding-tool checkout in a tempdir.
 
     Mirrors the candidate CLI-11 layout: the labkit CLI
-    executable, the shared cloud_lab
-    implementation package it imports, templates/new-standard-lab
-    (the four template files), templates/new-terraform-lab (the
-    instructions README), and managed labs/ + archives/ with tracked
-    placeholders. Template content is copied from the real repo's
-    relocated layout - no flat-scaffold fallback, no synthesized
-    stand-ins: the fixture exercises exactly what a fresh clone ships.
+    executable, the shared labkit_cli
+    implementation package it imports, the REAL template trees for
+    all three lab types (copied file for file from the actual
+    repository - no flat-scaffold fallback, no synthesized
+    stand-ins: the fixture exercises exactly what a fresh clone
+    ships), and managed labs/ + archives/ with tracked
+    placeholders.
     """
     repo = (parent / "repo").resolve()  # real path: matches the way
     repo.mkdir()                        # labkit anchors REPO_ROOT
@@ -380,19 +402,15 @@ def make_repo(parent: Path) -> Path:
     shutil.copy2(REPO_ROOT / "labkit", repo / "labkit")
 
     # the shared implementation package every entry point imports
-    shutil.copytree(REPO_ROOT / "cloud_lab", repo / "cloud_lab",
+    shutil.copytree(REPO_ROOT / "labkit_cli", repo / "labkit_cli",
                     ignore=shutil.ignore_patterns("__pycache__"))
 
-    relocated = repo / "templates" / "new-standard-lab"
-    relocated.mkdir(parents=True)
-    for name in TEMPLATE_FILES:
-        shutil.copy2(REPO_ROOT / "templates" / "new-standard-lab" / name,
-                     relocated / name)
-
-    instructions = repo / "templates" / "new-terraform-lab"
-    instructions.mkdir()
-    shutil.copy2(REPO_ROOT / "templates" / "new-terraform-lab" / "README.md",
-                 instructions / "README.md")
+    # the template trees the type-aware scaffold generates from
+    for template in ("new-standard-lab", "new-terraform-lab",
+                     "new-cli-lab"):
+        shutil.copytree(REPO_ROOT / "templates" / template,
+                        repo / "templates" / template,
+                        ignore=shutil.ignore_patterns("__pycache__"))
 
     (repo / "labs").mkdir()
     (repo / "labs" / ".gitkeep").write_text("")

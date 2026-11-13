@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import (TEMPLATE_FILES, make_git_repo, run_git, stub_env)
+from util import (REPO_ROOT, make_git_repo, run_git, stub_env)
 
 
 class IgnoreRuleTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class FreshCloneTests(unittest.TestCase):
         # the root carries the tool only - no completed-lab trees.
         # The final executable and its package, with no legacy launchers.
         allowed = {".git", ".gitignore", ".plans", "AGENTS.md", "README.md",
-                   "labkit", "cloud_lab", "templates", "labs", "archives",
+                   "labkit", "labkit_cli", "templates", "labs", "archives",
                    "tests", "scripts"}
         top = {p.name for p in clone.iterdir()}
         self.assertEqual(top - allowed, set(), sorted(top - allowed))
@@ -109,10 +109,18 @@ class FreshCloneTests(unittest.TestCase):
         self.assertFalse((clone / "scripts" / "restore_lab.py").exists())
         instructions = clone / "templates" / "new-terraform-lab" / "README.md"
         self.assertTrue(instructions.is_file())
-        # the standard template moved with its history
-        for name in TEMPLATE_FILES:
-            self.assertTrue((clone / "templates" / "new-standard-lab" / name).is_file(),
-                            name)
+        # every template file the repository ships reaches a fresh
+        # clone, for all three lab types
+        shipped = {str(p.relative_to(REPO_ROOT / "templates"))
+                   for p in (REPO_ROOT / "templates").rglob("*")
+                   if p.is_file()}
+        cloned = {str(p.relative_to(clone / "templates"))
+                  for p in (clone / "templates").rglob("*")
+                  if p.is_file()}
+        self.assertTrue(shipped, "no template files found to compare")
+        self.assertEqual(cloned, shipped,
+                         "the fresh clone's templates differ from the "
+                         "repository's")
         # the flat scaffold dir is gone
         self.assertFalse((clone / "terraform-lab-scaffold").exists())
         # no terraform anywhere outside templates/

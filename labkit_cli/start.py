@@ -1,4 +1,4 @@
-"""cloud_lab.start - scaffold a new GCP terraform lab into labs/<slug>/.
+"""labkit_cli.start - scaffold a new GCP lab into labs/<slug>/.
 
 One invocation collects everything the lab needs and does the busywork:
 
@@ -7,15 +7,22 @@ One invocation collects everything the lab needs and does the busywork:
                the lab is running - the project, region and other
                lab-specific values)
   2. collect   whatever the page couldn't answer (every flag you pass
-               is a question you skip)
-  3. scaffold  providers.tf, backend.tf, variables.tf, task<N>.tf,
-               README.md, terraform.tfvars
-  4. init      terraform init
+               is a question you skip), starting with the lab type:
+               standard (follow the page's own procedure, notes per
+               task), terraform (write your own configuration), or
+               cli (work command by command)
+  3. scaffold  the type's own files - README.md and task<N>.md for
+               standard, the Terraform workspace (backend.tf,
+               providers.tf, variables.tf, task<N>.tf, generated
+               terraform.tfvars) for terraform, README.md and
+               comment-only task<N>.sh for cli - plus .labkit-type
+               (the recorded lab type)
+  4. init      terraform init (terraform labs only)
   5. auth      one gcloud login --update-adc (gcloud + ADC), then
                project/region/zone config
 
 The reset half of a refresh (start on an existing lab) runs
-cloud_lab.reset directly - the shared implementation, not an external
+labkit_cli.reset directly - the shared implementation, not an external
 executable.
 
 Stdlib only - the browser fetch is an optional escalation, installed with:
@@ -24,8 +31,15 @@ Stdlib only - the browser fetch is an optional escalation, installed with:
 
 Labs are managed directories: every target resolves to a direct child
 of labs/ in this repository, no matter which directory you invoke the
-CLI from. Templates live under templates/ and are selected internally
-(standard, by default) - there is no template flag or prompt.
+CLI from. Templates live under templates/, one per type, and the type
+is a public decision: --type selects it, a new lab asks otherwise.
+
+Every scaffolded lab records its type in a plain .labkit-type file,
+and refresh reads that record back so a lab is regenerated as the same
+kind of lab. Eligible legacy directories without a record - labs created
+before typed scaffolds, or template trees copied by hand - refresh as
+standard labs; a type is never guessed from a directory's files, and a
+plain directory that was never a lab is refused untouched.
 """
 
 import argparse
@@ -47,42 +61,65 @@ from pathlib import Path
 from typing import Literal, overload
 from urllib.parse import urlsplit
 
-from cloud_lab import reset
-from cloud_lab.common import (BLU, CYN, GRN, LABS_DIR, RED, REPO_ROOT, RST,
+from labkit_cli import reset
+from labkit_cli.common import (BLU, CYN, GRN, LABS_DIR, RED, REPO_ROOT, RST,
                               Spinner, YLW, banner, cache_dir, check_slug,
                               resolve_lab_target)
 
 TEMPLATES_DIR = REPO_ROOT / "templates"
 
-# Internal template registry. The CLI always uses the standard
-# template today; identity and lookup stay behind this boundary so a
-# future template needs no call-site changes - and so no public flag,
-# prompt, or auto-detection grows around an unfinished workflow.
-DEFAULT_TEMPLATE = "standard"
-TEMPLATE_IDS = ("standard", "terraform")
+# The three public lab types and the template each generates from
+# (AC9). Standard follows the lab page's own procedure and keeps
+# notes per task; terraform is a write-your-own configuration
+# workspace; cli is command-by-command work. One registry, no
+# defaults: the type is a decision the student makes.
 _TEMPLATE_DIRS = {
     "standard": "new-standard-lab",
     "terraform": "new-terraform-lab",
+    "cli": "new-cli-lab",
+}
+# Files copied verbatim from the selected template (task files are
+# generated instead, because how many there are is a per-lab detail).
+# Only terraform ships Terraform support files (AC5); standard and
+# cli students add other files when their lab requires them.
+_TEMPLATE_STATIC = {
+    "standard": ("README.md",),
+    "terraform": ("README.md", "backend.tf", "providers.tf", "variables.tf"),
+    "cli": ("README.md",),
+}
+# The shipped exemplar every task<N> stub is rendered from (AC10).
+_TASK_EXEMPLARS = {
+    "standard": "task1.md",
+    "terraform": "task1.tf",
+    "cli": "task1.sh",
 }
 
 
-def template_dir(name: str = DEFAULT_TEMPLATE) -> Path:
-    """The directory template `name` lives in (raises on unknown names).
-
-    Internal only: the CLI passes no name and uses the default.
-    """
+def template_dir(lab_type: str) -> Path:
+    """The directory template `lab_type` lives in (raises on unknown types)."""
     try:
-        return TEMPLATES_DIR / _TEMPLATE_DIRS[name]
+        return TEMPLATES_DIR / _TEMPLATE_DIRS[lab_type]
     except KeyError:
         raise ValueError(
-            f"unknown template {name!r} (known: {', '.join(TEMPLATE_IDS)})") from None
+            f"unknown lab type {lab_type!r} (known: {', '.join(LAB_TYPES)})") from None
 
-# Files copied verbatim from the selected template. Task files are
-# generated instead, because how many there are is a per-lab detail.
-# (The reset half lives in cloud_lab.reset - one implementation serves
-# every lab and every refresh, and bugfixes propagate instead of
-# fossilizing in each lab dir.)
-TEMPLATE_FILES = ("backend.tf", "providers.tf", "variables.tf", "README.md")
+
+# --- lab type metadata ------------------------------------------------------
+# AC10/AC12: the type a lab was scaffolded with is recorded in a
+# plain .labkit-type file - one known identifier, no schema or
+# version framework. Refresh reads it back, so a lab is regenerated
+# as the same kind of lab; the record is a managed generated output
+# and carries the same safeguards as the template files. Eligible
+# legacy directories without the record - labs from before it
+# existed, or template trees copied by hand - refresh as standard, a
+# fixed fallback: a type is never guessed from a directory's files.
+LAB_TYPE_FILE = ".labkit-type"
+LAB_TYPES = ("standard", "terraform", "cli")
+
+# The label a task stub carries when no title was collected for it
+# (AC7: the page's own titles are labels; a missing one is named as
+# missing, never invented).
+UNTITLED_TASK = "add this task's title from the lab page"
 
 # Placeholders the script fills in. Plain unique markers + str.replace,
 # NOT string.Template: the README contains $(shell code) and "$" would
@@ -104,13 +141,6 @@ FALLBACK_SECTIONS = """\
 ## Objectives
 
 <!-- Add list of objectives -->
-"""
-
-TASK_FILE_TEMPLATE = """\
-# -----------------------------------------------
-# Task {n}.{title}
-# -----------------------------------------------
-
 """
 
 
@@ -212,6 +242,34 @@ def check_url(value: str):
     # offline tests, exactly like a real URL would
     if not (re.match(r"^https?://", value) or value.startswith("file://")):
         return "must start with http://, https:// or file://"
+
+
+def check_lab_type(value: str):
+    if value not in LAB_TYPES:
+        return f"enter one of: {', '.join(LAB_TYPES)}"
+
+
+def select_new_lab_type(args) -> str:
+    """The type for a new lab: --type, or the interactive prompt.
+
+    No default (AC9): the three types are different ways to work a
+    lab, and picking one silently would be a decision the student
+    never made - an empty answer re-prompts like any other invalid
+    one. An unattended run (--yes) without --type fails here, before
+    any lab write, reset, initialization, or authentication:
+    --yes answers confirmation questions, never the type decision.
+    """
+    if args.lab_type:
+        return args.lab_type
+    if args.yes:
+        sys.exit(f"{RED}a new lab needs a type: pass --type "
+                 f"({'/'.join(LAB_TYPES)}){RST}\n"
+                 f"{YLW}hint: --yes answers confirmation questions, not "
+                 f"the lab type decision{RST}")
+    return ask(f"Lab type ({'/'.join(LAB_TYPES)}) - standard follows the "
+               f"page's own procedure with notes per task, terraform is "
+               f"your own configuration, cli is command-by-command",
+               validate=check_lab_type)
 
 
 # --- best-effort lab page fetch ---------------------------------------------
@@ -656,6 +714,75 @@ def _tf_name(text: str) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", text.lower()).strip("_")
 
 
+def task_suffix(lab_type: str) -> str:
+    """The task-file extension a type generates: .md, .tf or .sh."""
+    return {"standard": ".md", "terraform": ".tf", "cli": ".sh"}[lab_type]
+
+
+def generated_outputs(lab_type: str) -> list[str]:
+    """Every file the scaffold of `lab_type` (re)writes, by name.
+
+    Task stubs are excluded on purpose: an existing task file is user
+    work that is never overwritten; only missing ones are created.
+    """
+    names = [*_TEMPLATE_STATIC[lab_type], LAB_TYPE_FILE]
+    if lab_type == "terraform":
+        names.append("terraform.tfvars")
+    return names
+
+
+def validate_template(lab_type: str) -> None:
+    """Fail before any write or reset when the selected template is broken.
+
+    The static files and the task exemplar must all ship AND read as
+    text: a missing one would leave partial generated output behind,
+    and one that exists but cannot be read (wrong permissions, bytes
+    no decoder accepts) would crash the scaffold mid-write instead -
+    after a fresh lab is half-written, or after a refresh's reset has
+    already deleted the lab's state, tfvars, and credentials (AC10).
+    Only the SELECTED type's template is validated - a broken
+    unrelated template cannot block the run.
+    """
+    template = template_dir(lab_type)
+    wanted = [*_TEMPLATE_STATIC[lab_type], _TASK_EXEMPLARS[lab_type]]
+    missing = [name for name in wanted if not (template / name).is_file()]
+    if missing:
+        sys.exit(f"{RED}templates missing from {template}: {', '.join(missing)}{RST}")
+    # read every required file to the end before any mutation: the
+    # scaffold reads them mid-write, so this is where a broken one
+    # must refuse, naming the file instead of crashing later
+    for name in wanted:
+        path = template / name
+        try:
+            path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as err:
+            sys.exit(f"{RED}cannot read template file {path} as text: {err}{RST}\n"
+                     f"{YLW}hint: fix the file, then run the command again{RST}")
+
+
+def _comment_safe(text: str) -> str:
+    """One comment-safe line: whitespace collapsed, nothing else.
+
+    Task titles come from the lab page and are labels in the stubs; a
+    title carrying newlines must never break out of a comment-only
+    .tf/.sh workspace into executable source (AC7).
+    """
+    return " ".join(text.split())
+
+
+def render_task_stub(lab_type: str, n: int, title: str) -> str:
+    """The selected template's task exemplar, number and title filled.
+
+    Guidance comes from the template; the page supplies only the
+    label. No marker survives: an untitled task gets the fill-me-in
+    label instead of a raw __TASK_TITLE__ placeholder.
+    """
+    exemplar = (template_dir(lab_type) / _TASK_EXEMPLARS[lab_type]).read_text()
+    return (exemplar
+            .replace("__TASK_N__", str(n))
+            .replace("__TASK_TITLE__", _comment_safe(title) or UNTITLED_TASK))
+
+
 def detail_project(details: list) -> str | None:
     """The project id from the connection-details JSON, primary first.
 
@@ -733,18 +860,35 @@ def render_sections(sections: list) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def scaffold(lab_dir: Path, title: str, url: str | None, sections_md: str | None,
-             tasks: int, task_titles: list, project: str, region: str, zone: str,
+def scaffold(lab_dir: Path, lab_type: str, title: str, url: str | None,
+             sections_md: str | None, tasks: int, task_titles: list,
+             project: str, region: str, zone: str,
              extras: list | None = None, refresh: bool = False) -> list[Path]:
     """Write the whole lab into lab_dir; return the files created.
 
+    Generates lab_type's own contents: the type's static files, the
+    README rendered, and one task stub per task rendered from the
+    type's exemplar. Terraform labs additionally get extras appended
+    to variables.tf and the generated terraform.tfvars; standard and
+    cli labs have no Terraform files to add them to, so the collected
+    extras stop at the page (their values still print in the preview
+    for the student to use however the lab asks).
+
     Refresh-safe by construction: the dir is created only when
     missing, and a task stub is written only for a file that doesn't
-    exist - task files are user work, never overwritten.
+    exist - task files are user work, never overwritten, whatever
+    their extension. The type record is rewritten with lab_type, so
+    the lab keeps identifying itself as that type (AC10).
     """
     lab_dir.mkdir(parents=True, exist_ok=True)
-    template = template_dir()
-    copied = [lab_dir / name for name in TEMPLATE_FILES]
+    # the type record: a plain identifier, written first so the lab
+    # identifies itself from its first scaffold on. A refresh got
+    # here only with this same type settled, so the rewrite is a
+    # no-op content-wise (and for a legacy lab it is the approved
+    # standard fallback finally being recorded).
+    (lab_dir / LAB_TYPE_FILE).write_text(lab_type + "\n", encoding="utf-8")
+    template = template_dir(lab_type)
+    copied = [lab_dir / name for name in _TEMPLATE_STATIC[lab_type]]
     for path in copied:
         # copyfile addresses the exact output filename: an existing
         # directory at the destination is an error, never a folder to
@@ -768,54 +912,62 @@ def scaffold(lab_dir: Path, title: str, url: str | None, sections_md: str | None
     readme.write_text(text)
 
     # one stub per task, titled from the page when the page told us;
-    # an existing task<N>.tf is user work - kept byte-identical.
-    # is_symlink() covers DANGLING links too: exists() is False for
-    # those, and a write would follow the link out of the lab. A task
-    # link is a user entry - kept as-is, referent untouched.
+    # an existing task file is user work - kept byte-identical,
+    # whichever type's extension it carries. is_symlink() covers
+    # DANGLING links too: exists() is False for those, and a write
+    # would follow the link out of the lab. A task link is a user
+    # entry - kept as-is, referent untouched.
     task_files = []
+    suffix = task_suffix(lab_type)
     for n in range(1, tasks + 1):
         stub_title = next((t["title"] for t in task_titles if t["n"] == n), "")
-        task = lab_dir / f"task{n}.tf"
+        task = lab_dir / f"task{n}{suffix}"
         if task.exists() or task.is_symlink():
             LOG.debug("%s already exists - kept as-is%s", task,
                       " (refresh)" if refresh else "")
             continue
-        task.write_text(TASK_FILE_TEMPLATE.format(n=n, title=f" {stub_title}" if stub_title else ""))
+        task.write_text(render_task_stub(lab_type, n, stub_title))
         task_files.append(task)
 
-    # lab-specific values; *.tfvars is gitignored, so this stays local
-    tfvars_lines = [
-        "# lab-specific values (*.tfvars is gitignored - stays local)",
-        f'project_id     = "{project}"',
-        f'compute_region = "{region}"',
-        f'compute_zone   = "{zone}"',
-    ]
-    # extras: the ql-variables the lab page named (bucket, network,
-    # instance names...). The declarations land in variables.tf; the
-    # values are only known once the lab is running - until then they
-    # stay commented placeholders in tfvars rather than silent blanks.
-    if extras:
-        blocks = []
-        for extra in extras:
-            blocks.append(
-                f'variable "{extra["name"]}" {{\n'
-                f'    description = "{extra["description"]}"\n'
-                f"    type = string\n}}"
-            )
-        vars_tf = lab_dir / "variables.tf"
-        vars_tf.write_text(vars_tf.read_text().rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n")
+    created = copied + task_files + [lab_dir / LAB_TYPE_FILE]
 
-        tfvars_lines.append("")
-        for extra in extras:
-            if extra["value"]:
-                tfvars_lines.append(f'{extra["name"]} = "{extra["value"]}"')
-            else:
-                tfvars_lines.append(f'# {extra["name"]} = "?"  # {extra["description"]} - from the lab page')
+    # lab-specific values; *.tfvars is gitignored, so this stays local.
+    # Terraform only: standard and cli labs have no Terraform variables
+    # to feed (AC11 - connection values are not their scaffold's to
+    # write), and the extras belong to variables.tf/tfvars.
+    if lab_type == "terraform":
+        tfvars_lines = [
+            "# lab-specific values (*.tfvars is gitignored - stays local)",
+            f'project_id     = "{project}"',
+            f'compute_region = "{region}"',
+            f'compute_zone   = "{zone}"',
+        ]
+        # extras: the ql-variables the lab page named (bucket, network,
+        # instance names...). The declarations land in variables.tf; the
+        # values are only known once the lab is running - until then they
+        # stay commented placeholders in tfvars rather than silent blanks.
+        if extras:
+            blocks = []
+            for extra in extras:
+                blocks.append(
+                    f'variable "{extra["name"]}" {{\n'
+                    f'    description = "{extra["description"]}"\n'
+                    f"    type = string\n}}"
+                )
+            vars_tf = lab_dir / "variables.tf"
+            vars_tf.write_text(vars_tf.read_text().rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n")
 
-    tfvars = lab_dir / "terraform.tfvars"
-    tfvars.write_text("\n".join(tfvars_lines) + "\n")
+            tfvars_lines.append("")
+            for extra in extras:
+                if extra["value"]:
+                    tfvars_lines.append(f'{extra["name"]} = "{extra["value"]}"')
+                else:
+                    tfvars_lines.append(f'# {extra["name"]} = "?"  # {extra["description"]} - from the lab page')
 
-    created = copied + task_files + [tfvars]
+        tfvars = lab_dir / "terraform.tfvars"
+        tfvars.write_text("\n".join(tfvars_lines) + "\n")
+        created.append(tfvars)
+
     created.sort()
     return created
 
@@ -876,17 +1028,56 @@ def gcloud_setup(project: str, region: str, zone: str) -> bool:
 # --- refresh: reuse an existing lab dir -------------------------------------
 # A restarted Qwiklabs lab gets new values (project ID, bucket names...),
 # so a half-finished dir holds stale tfvars and a tfstate pointing at a
-# dead project. *Use* = reset (cloud_lab.reset owns the semantics, and
+# dead project. *Use* = reset (labkit_cli.reset owns the semantics, and
 # the refresh calls it directly) then re-scaffold the generated
 # artifacts. Task files and anything else the scaffold didn't generate
 # are never touched.
 def looks_like_lab_dir(lab_dir: Path) -> bool:
     """True when the dir carries at least one .tf file.
 
-    The guard against reset + rewrite on an arbitrary directory: a
-    reset is only ever pointed at a lab.
+    Legacy-eligibility only, never a type decision: it marks a
+    directory the original Terraform workflow created, separating an
+    eligible legacy lab (which refreshes as standard) from an
+    arbitrary directory the reset must never be pointed at.
     """
     return lab_dir.is_dir() and any(lab_dir.glob("*.tf"))
+
+
+def recorded_lab_type(lab_dir: Path) -> str | None:
+    """The type recorded for lab_dir, or None for an untyped legacy lab.
+
+    The record must be a regular file holding exactly one known type
+    identifier. A symlink (dangling included), any other kind of
+    entry, unreadable bytes, or content that is not one known
+    identifier is a refusal - printed and exited here, before any
+    fetch, reset, write, or auth. The file is never repaired,
+    rewritten, or ignored in place.
+    """
+    path = lab_dir / LAB_TYPE_FILE
+    if path.is_symlink():
+        sys.exit(f"{RED}{path} is a symlink - refusing to read or write "
+                 f"the lab's recorded type through it{RST}\n"
+                 f"{YLW}hint: remove the link, then refresh again{RST}")
+    if os.path.lexists(path) and not stat.S_ISREG(os.lstat(path).st_mode):
+        sys.exit(f"{RED}{path} exists and is not a regular file - refusing "
+                 f"to treat it as the lab's recorded type{RST}\n"
+                 f"{YLW}hint: remove it, then refresh again{RST}")
+    if not path.exists():
+        return None  # legacy: no recorded type, never adopted
+    try:
+        type_id = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        sys.exit(f"{RED}{path} could not be read as the lab's recorded "
+                 f"type - refusing to guess{RST}\n"
+                 f"{YLW}hint: fix the file by hand, or start a fresh lab "
+                 f"under a new name{RST}")
+    if type_id not in LAB_TYPES:
+        sys.exit(f"{RED}{path} records {type_id!r}, not a known lab type "
+                 f"(known: {', '.join(LAB_TYPES)}) - refusing to guess, "
+                 f"repair, or rewrite it{RST}\n"
+                 f"{YLW}hint: fix the file by hand, or start a fresh lab "
+                 f"under a new name{RST}")
+    return type_id
 
 
 def require_existing_for_use(args, lab_dir: Path) -> None:
@@ -902,13 +1093,23 @@ def require_existing_for_use(args, lab_dir: Path) -> None:
                  f"{YLW}hint: drop --use-existing to create it, or check the name{RST}")
 
 
-def use_or_new(args, lab_dir: Path) -> tuple[Path | None, bool]:
+def use_or_new(args, lab_dir: Path) -> tuple[Path | None, bool, str | None]:
     """The user named an existing dir: use it, or pick a new name.
 
-    Returns (directory, refresh); (None, False) means "new name" -
-    the caller re-enters the directory prompt with a not-exists
-    validator. The directory comes back as the resolved lab path
-    itself, not just its basename.
+    Returns (directory, refresh, lab_type); (None, False, None) means
+    "new name" - the caller re-enters the directory prompt with a
+    not-exists validator. The directory comes back as the resolved
+    lab path, and the type is settled HERE so every type refusal
+    happens before the fetch, the reset, any write, or auth (AC12):
+
+    * a recorded type is reused as-is - never re-asked, never
+      switched; a --type naming anything else is refused
+    * an eligible legacy lab (no record, but carrying .tf files -
+      the original Terraform workflow's own marker) takes the fixed
+      standard fallback; the marker never decides the type, and a
+      --type naming anything else is refused the same way
+    * anything else - a directory with neither a record nor .tf
+      files - is not a lab this tool made: refused untouched
     """
     # an unattended run must never silently reset + rewrite
     if args.yes and not args.use_existing:
@@ -919,27 +1120,51 @@ def use_or_new(args, lab_dir: Path) -> tuple[Path | None, bool]:
         choice = ask(f"{lab_dir.name}/ exists. [u]se it or [n]ew name",
                      default="u", validate=check_use_new).lower()
         if choice in ("n", "new"):
-            return None, False
-    if not looks_like_lab_dir(lab_dir):
-        print(f"{RED}  {lab_dir.name}/ has no .tf files - doesn't look like a "
-              f"lab dir, not resetting it{RST}")
-        return None, False
-    return lab_dir, True
+            return None, False, None
+    lab_type = recorded_lab_type(lab_dir)
+    if args.lab_type and lab_type and args.lab_type != lab_type:
+        sys.exit(f"{RED}{lab_dir.name}/ records lab type {lab_type!r}, and "
+                 f"--type {args.lab_type} conflicts with it - switching an "
+                 f"existing lab between types is not supported{RST}\n"
+                 f"{YLW}hint: keep working it as {lab_type}, or start a "
+                 f"fresh lab under a new name{RST}")
+    if lab_type is None:
+        if not looks_like_lab_dir(lab_dir):
+            sys.exit(f"{RED}{lab_dir.name}/ has no recorded lab type "
+                     f"({LAB_TYPE_FILE}) and no .tf files - it does not look "
+                     f"like a lab this tool made, so it is left untouched: "
+                     f"no reset, no rewrite, no adoption{RST}\n"
+                     f"{YLW}hint: start a fresh lab under a new name instead{RST}")
+        if args.lab_type and args.lab_type != "standard":
+            sys.exit(f"{RED}{lab_dir.name}/ has no recorded lab type "
+                     f"({LAB_TYPE_FILE}) - a legacy lab refreshes as standard, "
+                     f"and --type {args.lab_type} conflicts with that "
+                     f"fallback{RST}\n"
+                     f"{YLW}hint: drop --type, or pass --type standard{RST}")
+        # eligible legacy lab: the fixed standard fallback. The .tf
+        # files say the ORIGINAL workflow made this dir; they never
+        # decide the type it refreshes as.
+        return lab_dir, True, "standard"
+    return lab_dir, True, lab_type
 
 
-def refresh_keeps(lab_dir: Path) -> list[str]:
-    """What a refresh leaves untouched: task files + non-generated entries.
+def refresh_keeps(lab_dir: Path, lab_type: str) -> list[str]:
+    """What a refresh leaves untouched: the selected type's
+    non-generated, non-reset entries.
 
-    Excluded: the files the scaffold rewrites (templates, tfvars) and
-    the ones the reset deletes (tfstate, tfvars backups). Everything
-    else - task files, user modules, a main.tf from older scaffolds -
-    survives, and gets named in the preview.
+    Excluded: the files the type's scaffold rewrites (templates,
+    terraform's tfvars, the recorded-type record) and the ones the
+    reset deletes (tfstate, tfvars backups). Everything else - task
+    files, user modules, files a student added for another tool, a
+    legacy lab's Terraform sources - is user work that survives and
+    gets named in the preview.
     """
+    generated = set(generated_outputs(lab_type))
     keeps = []
     for entry in sorted(lab_dir.iterdir()):
         if entry.is_dir():
             keeps.append(entry.name + "/")
-        elif (entry.name not in TEMPLATE_FILES
+        elif (entry.name not in generated
               and not fnmatch.fnmatch(entry.name, "*.tfvars*")
               and not fnmatch.fnmatch(entry.name, "*.tfstate*")):
             keeps.append(entry.name)
@@ -960,11 +1185,13 @@ def refresh_keeps(lab_dir: Path) -> list[str]:
 # runs and before anything is written. Task files are different:
 # they are user entries, so a task link - even a dangling one - is
 # kept as-is and its referent never touched (scaffold treats
-# is_symlink() as "exists").
-def refuse_unsafe_generated_outputs(lab_dir: Path) -> None:
+# is_symlink() as "exists"). The recorded-type file is a generated
+# output like the rest: a link or directory there would send the
+# record's rewrite outside the lab.
+def refuse_unsafe_generated_outputs(lab_dir: Path, lab_type: str) -> None:
     """Exit before any reset or write if a generated output is not a
     regular file (a symlink - dangling included - or a directory)."""
-    for name in (*TEMPLATE_FILES, "terraform.tfvars"):
+    for name in generated_outputs(lab_type):
         path = lab_dir / name
         if path.is_symlink():
             sys.exit(f"{RED}{path} is a symlink - refusing to write through it{RST}\n"
@@ -980,8 +1207,8 @@ def refuse_unsafe_generated_outputs(lab_dir: Path) -> None:
 
 # --- entry plumbing -----------------------------------------------------------
 # The argument contract for `labkit start`.
-SUMMARY = ("Scaffold a new GCP terraform lab into labs/<slug>/ - or refresh "
-           "an existing one: reset it, then re-scaffold the generated files "
+SUMMARY = ("Scaffold a new GCP lab into labs/<slug>/ - or refresh an "
+           "existing one: reset it, then re-scaffold the generated files "
            "(task files untouched).")
 
 
@@ -989,9 +1216,10 @@ def examples(command: str) -> str:
     """The help examples, named for the entry point that shows them."""
     return (
         "examples:\n"
-        f"  {command} my-new-lab\n"
-        f"  {command} my-new-lab --tasks 4 --skip-auth\n"
-        f"  {command} my-new-lab --project qwiklabs-gcp-00-abc123 --zone us-central1-a\n"
+        f"  {command} my-new-lab --type standard\n"
+        f"  {command} my-new-lab --type terraform --project qwiklabs-gcp-00-abc123 --zone us-central1-a\n"
+        f"  {command} my-new-lab --type cli --tasks 3\n"
+        f"  {command} my-new-lab   # prompts for the type first\n"
         f"  {command} --url https://partner.skills.google/course_templates/1573/labs/620245\n"
         f"  {command} old-lab --use-existing   # refresh: reset + re-scaffold\n"
         "\n"
@@ -1006,13 +1234,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("directory", nargs="?",
                         help="lab to create or refresh: a slug (labs/<slug>) or "
                              "an explicit path to a managed lab under labs/")
+    parser.add_argument("--type", dest="lab_type", choices=LAB_TYPES,
+                        help="lab type to scaffold: standard (follow the lab's "
+                             "own procedure, notes per task), terraform (write "
+                             "your own configuration), or cli (work command "
+                             "by command)")
     parser.add_argument("--title", help="human-readable lab title (README H1)")
     parser.add_argument("--url", help="lab URL, used to pre-fill the README")
-    parser.add_argument("--tasks", type=int, help="how many task<N>.tf files to create")
+    parser.add_argument("--tasks", type=int,
+                        help="how many task files to create (task<N>.md, .tf, "
+                             "or .sh by type)")
     parser.add_argument("--project", help="GCP project ID from the lab")
     parser.add_argument("--region", help="compute region, e.g. us-central1")
     parser.add_argument("--zone", help="compute zone, e.g. us-central1-a")
-    parser.add_argument("--skip-init", action="store_true", help="don't run terraform init")
+    parser.add_argument("--skip-init", action="store_true",
+                        help="don't run terraform init (terraform labs only)")
     parser.add_argument("--skip-auth", action="store_true", help="don't run gcloud login/config")
     parser.add_argument("--use-existing", action="store_true",
                         help="an existing lab dir gets refreshed: reset it, then "
@@ -1037,21 +1273,35 @@ def run(args) -> int:
     lab_dir = None
     refresh = False
     pending_new = False
+    lab_type = args.lab_type  # the explicit choice, wherever it is used
     if args.directory:
         lab_dir = resolve_lab_target(args.directory, cwd=Path.cwd())
         if lab_dir.exists():
-            if use_or_new(args, lab_dir)[0] is None:
-                # the user chose a new name (or was refused the use path)
+            chosen = use_or_new(args, lab_dir)
+            if chosen[0] is None:
+                # the user chose a new name at the prompt
                 pending_new = True
                 lab_dir = None
             else:
                 refresh = True
+                # the recorded type (or the legacy fallback) settles
+                # the refresh's type here, before the fetch
+                lab_type = chosen[2]
                 # output safety before the fetch: a symlinked or
                 # non-file generated output would turn the refresh
                 # into an external write
-                refuse_unsafe_generated_outputs(lab_dir)
+                refuse_unsafe_generated_outputs(lab_dir, lab_type)
         else:
             require_existing_for_use(args, lab_dir)
+
+    # --- the type for a fresh lab: a public decision, never a default -
+    # Settled before the fetch wherever new-ness is already known: a
+    # positional naming a fresh directory, or the "new" choice at the
+    # use-or-new prompt. A missing positional settles its type after
+    # the name resolves - the name may still land on an existing lab,
+    # which reuses its recorded type instead of asking (AC9/AC12).
+    if lab_type is None and args.directory:
+        lab_type = select_new_lab_type(args)
 
     # --- fetch phase: the page answers most of the questions --------
     # URL comes first so a successful fetch can derive the title, the
@@ -1104,7 +1354,7 @@ def run(args) -> int:
                 if sections_md:
                     print(f"  {GRN}{len(info['sections'])} content sections extracted (images included){RST}")
                 if page_tasks:
-                    print(f"  {GRN}{len(page_tasks)} task headings -> real titles in task<N>.tf{RST}")
+                    print(f"  {GRN}{len(page_tasks)} task headings -> real titles in the task files{RST}")
                 elif info["objectives"]:
                     print(f"  {GRN}{len(info['objectives'])} objectives found on the page{RST}")
                 if running:
@@ -1138,10 +1388,9 @@ def run(args) -> int:
         slug = "-".join(_tf_name(page_title).replace("_", " ").split()[:6]) or None
 
     if pending_new:
-        # the user saw the existing lab and chose "new" (or was
-        # refused the use path) - this prompt refuses existing names,
-        # including its own default (ask validates defaults like
-        # typed answers)
+        # the user saw the existing lab and chose "new" - this
+        # prompt refuses existing names, including its own default
+        # (ask validates defaults like typed answers)
         name = ask("New lab directory (kebab-case)",
                    default=slug, validate=check_fresh_slug)
         lab_dir = resolve_lab_target(name, cwd=Path.cwd())
@@ -1150,18 +1399,25 @@ def run(args) -> int:
                    default=slug, validate=check_slug)
         lab_dir = resolve_lab_target(name, cwd=Path.cwd())
         if lab_dir.exists():
-            if use_or_new(args, lab_dir)[0] is None:
+            chosen = use_or_new(args, lab_dir)
+            if chosen[0] is None:
                 name = ask("New lab directory (kebab-case)",
                            default=slug, validate=check_fresh_slug)
                 lab_dir = resolve_lab_target(name, cwd=Path.cwd())
             else:
                 refresh = True
-                refuse_unsafe_generated_outputs(lab_dir)
+                lab_type = chosen[2]
+                refuse_unsafe_generated_outputs(lab_dir, lab_type)
         else:
             # a prompted or page-derived default is as much a target
             # selection as a positional: --use-existing on a missing
             # one must fail here, before any side effect
             require_existing_for_use(args, lab_dir)
+
+    if lab_type is None:
+        # the prompted or page-derived name resolved to a fresh lab:
+        # settle the type now, before any preview or write
+        lab_type = select_new_lab_type(args)
 
     # every path below agrees on this one resolved target: preview,
     # reset, scaffold, and the next-step cd all name labs/<slug>
@@ -1172,7 +1428,7 @@ def run(args) -> int:
         ask("Lab title", default=lab_dir.name.replace("-", " ").title())
 
     tasks = args.tasks or int(ask(
-        "How many tasks (one task<N>.tf each)",
+        "How many tasks (one task file each)",
         default=str(task_default),
         validate=check_tasks,
     ))
@@ -1182,37 +1438,41 @@ def run(args) -> int:
         objectives = "\n".join(f"{i}. " for i in range(1, tasks + 1))
         sections_md = f"## Overview\n\n{description}\n\n## Objectives\n\n{objectives}"
 
-    # precedence for each: flag > running lab's value > ask
-    if args.project:
-        project = args.project
-    elif fetched["project"]:
-        project = fetched["project"]
-        print(f"  {GRN}project from the running lab:{RST} {BLU}{project}{RST}")
-    else:
-        project = ask("GCP project ID", validate=check_project)
+    # precedence for each: flag > running lab's value > ask. Terraform
+    # labs need the project/region/zone as tfvars values; the other
+    # types need them only when the auth step will configure gcloud,
+    # so with --skip-auth there is nothing to collect (AC11).
+    needs_connection = lab_type == "terraform" or not args.skip_auth
+    project = region = zone = ""
+    if needs_connection:
+        if args.project:
+            project = args.project
+        elif fetched["project"]:
+            project = fetched["project"]
+            print(f"  {GRN}project from the running lab:{RST} {BLU}{project}{RST}")
+        else:
+            project = ask("GCP project ID", validate=check_project)
 
-    if args.zone:
-        zone = args.zone
-    elif fetched["zone"]:
-        zone = fetched["zone"]
-        print(f"  {GRN}zone from the running lab:{RST} {BLU}{zone}{RST}")
-    else:
-        # region known from the page? its -a zone makes a good default
-        zone = ask("Compute zone (like us-central1-a)",
-                   default=f"{fetched['region']}-a" if fetched["region"] else None,
-                   validate=check_zone)
-    region = args.region or fetched["region"] or zone.rsplit("-", 1)[0]
+        if args.zone:
+            zone = args.zone
+        elif fetched["zone"]:
+            zone = fetched["zone"]
+            print(f"  {GRN}zone from the running lab:{RST} {BLU}{zone}{RST}")
+        else:
+            # region known from the page? its -a zone makes a good default
+            zone = ask("Compute zone (like us-central1-a)",
+                       default=f"{fetched['region']}-a" if fetched["region"] else None,
+                       validate=check_zone)
+        region = args.region or fetched["region"] or zone.rsplit("-", 1)[0]
 
     # --- confirm: preview before side effects ----------------------------
-    # the selected template is validated here - before any reset or
-    # rewrite, so a missing template file can neither destroy an
-    # existing lab nor leave partial generated output behind
-    template = template_dir()
-    missing = [n for n in TEMPLATE_FILES if not (template / n).is_file()]
-    if missing:
-        sys.exit(f"{RED}templates missing from {template}: {', '.join(missing)}{RST}")
+    # the selected type's template is validated here - before any
+    # reset or rewrite, so a missing template file can neither destroy
+    # an existing lab nor leave partial generated output behind
+    validate_template(lab_type)
 
-    task_files = "task1.tf" if tasks == 1 else f"task1.tf..task{tasks}.tf"
+    suffix = task_suffix(lab_type)
+    task_files = f"task1{suffix}" if tasks == 1 else f"task1{suffix}..task{tasks}{suffix}"
     print()
     print(f"{BLU}Here's the plan:{RST}")
     # the resolved absolute target, not a repo-relative summary: the
@@ -1220,31 +1480,38 @@ def run(args) -> int:
     # names nothing (spec: previews show the resolved target)
     print(f"  {CYN}directory{RST}  {lab_dir}/ "
           f"({'existing - refresh' if refresh else 'new'})")
+    # the fallback note is honest about where the type came from: a
+    # legacy lab has no record, so the preview says so (AC12)
+    type_note = ""
+    if refresh and recorded_lab_type(lab_dir) is None:
+        type_note = " (no recorded type - legacy lab, standard fallback)"
+    print(f"  {CYN}type{RST}       {lab_type}{type_note}")
     if refresh:
         print(f"  {CYN}reset{RST}     clears: terraform.tfstate*, *.tfvars*, "
               f"gcloud config + credentials")
-        print(f"  {CYN}rewrites{RST}  {', '.join(TEMPLATE_FILES)}, terraform.tfvars")
-        keeps = refresh_keeps(lab_dir)
+        print(f"  {CYN}rewrites{RST}  {', '.join(generated_outputs(lab_type))}")
+        keeps = refresh_keeps(lab_dir, lab_type)
         print(f"  {CYN}keeps{RST}     {', '.join(keeps) if keeps else '(nothing else)'}")
     print(f"  {CYN}title{RST}      {title}")
     print(f"  {CYN}url{RST}        {url or '(none)'}")
     task_note = " (titled from the page)" if page_tasks else ""
     if refresh:
-        missing = [f"task{n}.tf" for n in range(1, tasks + 1)
-                   if not ((lab_dir / f"task{n}.tf").exists()
-                           or (lab_dir / f"task{n}.tf").is_symlink())]
+        missing = [f"task{n}{suffix}" for n in range(1, tasks + 1)
+                   if not ((lab_dir / f"task{n}{suffix}").exists()
+                           or (lab_dir / f"task{n}{suffix}").is_symlink())]
         task_note = (f" (+ creates {', '.join(missing)})" if missing
                      else " (existing files kept)")
     print(f"  {CYN}tasks{RST}      {tasks} file(s): {task_files}{task_note}")
-    print(f"  {CYN}project{RST}    {project}")
-    print(f"  {CYN}region{RST}     {region} / {zone}")
+    if needs_connection:
+        print(f"  {CYN}project{RST}    {project}")
+        print(f"  {CYN}region{RST}     {region} / {zone}")
     if running:
         print(f"  {CYN}lab{RST}        {GRN}running{RST} - extracted values are live")
-    if fetched["extras"]:
+    if lab_type == "terraform" and fetched["extras"]:
         print(f"  {CYN}variables{RST}  +{len(fetched['extras'])} lab-specific (variables.tf + tfvars)")
     print(f"  {CYN}readme{RST}     {'content sections from the lab page' if sections_md else 'placeholder sections (fill manually)'}")
     if not refresh:
-        print(f"  {CYN}creates{RST}    {' '.join(TEMPLATE_FILES)}, task files, terraform.tfvars")
+        print(f"  {CYN}creates{RST}    {', '.join(generated_outputs(lab_type))}, task files")
 
     if not args.yes and ask("Proceed?", default="y").lower() not in ("y", "yes"):
         print(f"{YLW}aborted - nothing was created{RST}")
@@ -1268,12 +1535,16 @@ def run(args) -> int:
             sys.exit(f"{RED}reset failed (exit {rc}) - nothing was rewritten{RST}")
 
     with Spinner(f"{CYN}{'refreshing' if refresh else 'scaffolding'} {display}{RST}"):
-        created = scaffold(lab_dir, title, url, sections_md, tasks, page_tasks,
-                           project, region, zone, fetched["extras"], refresh=refresh)
+        created = scaffold(lab_dir, lab_type, title, url, sections_md, tasks,
+                           page_tasks, project, region, zone,
+                           fetched["extras"], refresh=refresh)
     LOG.debug("scaffolded %d files into %s", len(created), lab_dir)
 
+    # AC11: initialization is a Terraform-only step. The other types
+    # never touch the binary, so init_status stays "skipped" for them -
+    # and the summary and next steps below print nothing about it.
     init_status = "skipped"
-    if not args.skip_init:
+    if lab_type == "terraform" and not args.skip_init:
         if shutil.which("terraform"):
             init_status = "initialized" if terraform_init(lab_dir) else "failed"
         else:
@@ -1299,15 +1570,17 @@ def run(args) -> int:
     for path in created:
         print(f"  {path.name}")
     if refresh:
-        kept = refresh_keeps(lab_dir)
+        kept = refresh_keeps(lab_dir, lab_type)
         print(f"\n{GRN}Left untouched ({len(kept)}):{RST}")
         for name in kept:
             print(f"  {name}")
 
     print()
-    print(f"  terraform: {init_status}")
+    if lab_type == "terraform":
+        print(f"  terraform: {init_status}")
     print(f"  gcloud:    {auth_status}")
-    LOG.debug("run complete: init=%s auth=%s", init_status, auth_status)
+    LOG.debug("run complete: type=%s init=%s auth=%s",
+              lab_type, init_status, auth_status)
     if auth_status == "ok":
         account = subprocess.run(
             ["gcloud", "config", "get-value", "account"], capture_output=True, text=True
@@ -1323,10 +1596,16 @@ def run(args) -> int:
     # printed cd works pasted into the caller's shell, wherever that
     # shell happens to be - including outside the repository
     print(f"  cd {shlex.quote(str(lab_dir))}")
-    if init_status != "initialized":
-        print(f"  terraform init")
-    print(f"  # write resources in task<N>.tf as you work through the lab")
-    print(f"  terraform plan")
+    # per-type guidance: what the type's own task files are for
+    if lab_type == "terraform":
+        if init_status != "initialized":
+            print(f"  terraform init")
+        print(f"  # write resources in task<N>.tf as you work through the lab")
+        print(f"  terraform plan")
+    elif lab_type == "cli":
+        print(f"  # work the lab's tasks in task<N>.sh, one command at a time")
+    else:
+        print(f"  # follow the lab page's procedure, noting your work in task<N>.md")
     return 0
 
 

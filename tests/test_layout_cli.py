@@ -22,7 +22,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import (FULL_FLAGS, TEMPLATE_FILES, build_lab_dir, make_repo,
+from util import (FULL_FLAGS, build_lab_dir, make_repo,
                   run_cli, same_file_probe, snapshot, snapshot_nofollow,
                   stub_env)
 
@@ -57,7 +57,8 @@ class LayoutCliTests(unittest.TestCase):
         lab = self.repo / "labs" / "brand-new-lab"
         for n in range(1, 5):
             self.assertTrue((lab / f"task{n}.tf").is_file(), f"task{n}.tf")
-        for name in TEMPLATE_FILES:
+        # the terraform template's static files all landed
+        for name in ("README.md", "backend.tf", "providers.tf", "variables.tf"):
             self.assertTrue((lab / name).is_file(), name)
         self.assertTrue((lab / "terraform.tfvars").is_file())
         # no root-level lab: the old flat layout is not a fallback

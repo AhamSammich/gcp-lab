@@ -7,7 +7,7 @@ and credentials; `labkit archive` preserves a finished lab before removing
 its source; `labkit restore` recovers an archive into a fresh destination.
 Each command documents its own options with
 `labkit <command> --help`, and the work itself lives
-in the cloud_lab package next to this script.
+in the labkit_cli package next to this script.
 
 Run it from anywhere:
 
@@ -25,23 +25,23 @@ import sys
 from pathlib import Path
 
 # resolve the implementation relative to THIS file (a symlinked or
-# PATH-invoked labkit still finds its own cloud_lab package), and
+# PATH-invoked labkit still finds its own labkit_cli package), and
 # keep the checkout clean: no __pycache__ from a lab tool's imports
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import argparse
 
-from cloud_lab import archive, reset, restore, start
-from cloud_lab.common import SHOW_CURSOR, YLW, RST
+from labkit_cli import archive, reset, restore, start
+from labkit_cli.common import SHOW_CURSOR, YLW, RST
 
 
 def main(argv=None) -> int:
     """Parse the command line and hand off to the workflow's module."""
     parser = argparse.ArgumentParser(
         prog="labkit",
-        description="One CLI for the GCP lab workflow: "
-                    "scaffold/refresh, reset, archive, and restore labs.",
+        description="LabKit: one CLI for the GCP lab workflow: "
+        "scaffold/refresh, reset, archive, and restore labs.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -65,18 +65,20 @@ def main(argv=None) -> int:
     reset.add_arguments(reset_parser)
 
     archive_parser = commands.add_parser(
-        "archive", help="verify an archive pair, then remove one finished lab",
+        "archive",
+        help="verify an archive pair, then remove one finished lab",
         description="Preserve one complete managed lab locally, verify both "
-                    "artifacts, then remove its source. Does not destroy cloud "
-                    "resources or clear credentials.",
+        "artifacts, then remove its source. Does not destroy cloud "
+        "resources or clear credentials.",
     )
     archive.add_arguments(archive_parser)
 
     restore_parser = commands.add_parser(
-        "restore", help="recover an archive pair into a fresh destination",
+        "restore",
+        help="recover an archive pair into a fresh destination",
         description="Validate a version-1 archive and its matching .meta.json "
-                    "sidecar before restoring into a destination that must not "
-                    "exist. Never merge, overwrite, or modify the input pair.",
+        "sidecar before restoring into a destination that must not "
+        "exist. Never merge, overwrite, or modify the input pair.",
     )
     restore.add_arguments(restore_parser)
 

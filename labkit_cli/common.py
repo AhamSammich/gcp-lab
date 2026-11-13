@@ -1,7 +1,7 @@
 """Shared toolkit for the lab CLI: repository paths, terminal paint,
 and the one managed-lab target boundary.
 
-cloud_lab.start and cloud_lab.reset are the implementations behind
+labkit_cli.start and labkit_cli.reset are the implementations behind
 ./labkit; this module holds what they genuinely share. Importing it
 is side-effect free: no prompt, no subprocess, no log - the workflows
 start only when their entry points run.
@@ -23,13 +23,13 @@ LABS_DIR = REPO_ROOT / "labs"
 
 
 def cache_dir() -> Path:
-    """The tools' cache directory: ~/.cache/lab-start (its historic home).
+    """The tools' cache directory: ~/.cache/labkit.
 
     Read at CALL time, not import time: the debug logs, the browser
     profile, and the auth marker must follow the HOME in force when
     the process actually runs - never the HOME at import time.
     """
-    return Path.home() / ".cache" / "lab-start"
+    return Path.home() / ".cache" / "labkit"
 
 
 # --- terminal paint ------------------------------------------------------

@@ -165,7 +165,7 @@ the sole executable; `cloud-lab`, `lab-start`, and `lab-reset` have been removed
 
 The CLI-11 rename, cleanup, and documentation slice passed test-first
 implementation, coordinator diff inspection, and adversarial review with no
-blocking findings. The internal `cloud_lab` package and historical
+blocking findings. The internal `labkit_cli` package and historical
 `~/.cache/lab-start/`, `lab-start.log`, and `lab-reset.log` paths are unchanged.
 Workflow regressions now exercise `labkit` subcommands; no meaningful behavior
 checks were removed with the legacy launchers.

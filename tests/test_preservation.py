@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from util import load_cloud_lab, make_repo, stub_env
+from util import load_labkit_cli, make_repo, stub_env
 
 
 DARWIN = sys.platform == "darwin"
@@ -109,7 +109,7 @@ class PreservationTests(unittest.TestCase):
         patch = mock.patch.dict(os.environ, env, clear=True)
         patch.start()
         self.addCleanup(patch.stop)
-        self.p = load_cloud_lab(self.repo, "preservation")
+        self.p = load_labkit_cli(self.repo, "preservation")
         self.lab = self.repo / "labs" / "synthetic"
         self.lab.mkdir()
         (self.lab / "main.tf").write_bytes(b"work")
@@ -173,7 +173,7 @@ class PreservationTests(unittest.TestCase):
     def test_cli6_cli9_symlink_own_attrs_survive_archive_restore(self):
         abi_set_xattr(self.link, b"user.linkmark", b"LINKOWN", True)
         # Use the actual archive pair writer, not a migration compatibility API.
-        archive = load_cloud_lab(self.repo, "archive")
+        archive = load_labkit_cli(self.repo, "archive")
         inventory = archive.p._inventory_tree(self.lab)
         self.assertEqual(inventory["linked.tf"]["xattrs"]["user.linkmark"],
                          b"LINKOWN".hex())
