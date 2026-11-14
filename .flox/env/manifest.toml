@@ -14,5 +14,5 @@ echo "LabKit environment activated. Run './labkit start <lab-name>' to begin."
 
 [options]
 # Native smoke-tested target; add platforms only after their runtime checks.
-systems = ["aarch64-darwin"]
+systems = ["aarch64-darwin", "x86_64-linux"]
 allow.unfree = true

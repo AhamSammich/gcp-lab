@@ -24,7 +24,8 @@
     },
     "options": {
       "systems": [
-        "aarch64-darwin"
+        "aarch64-darwin",
+        "x86_64-linux"
       ],
       "allow": {
         "unfree": true
@@ -62,6 +63,35 @@
       "priority": 5
     },
     {
+      "attr_path": "google-cloud-sdk",
+      "broken": false,
+      "derivation": "/nix/store/a3qjzfjrgnwmni3xm34ng04jb42z63aq-google-cloud-sdk-592.0.0.drv",
+      "description": "Tools for the google cloud platform",
+      "install_id": "google-cloud-sdk",
+      "license": "Unspecified free software license",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "google-cloud-sdk-592.0.0",
+      "pname": "google-cloud-sdk",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T06:42:18.027897Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "592.0.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/5nvgvvfjm4zpxqsv82h67v0piajyas39-google-cloud-sdk-592.0.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
       "attr_path": "kubectl",
       "broken": false,
       "derivation": "/nix/store/8vrf307kv5aydvfy3wnp90dwx2g8km19-kubectl-1.37.2.drv",
@@ -91,6 +121,39 @@
         "out": "/nix/store/mgl42b66mz4yy9hc57bpnpiqqxif13x8-kubectl-1.37.2"
       },
       "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "kubectl",
+      "broken": false,
+      "derivation": "/nix/store/hd3a3qmhshy65rv7g2l0by79afk6x4bv-kubectl-1.37.2.drv",
+      "description": "Kubernetes CLI",
+      "install_id": "kubectl",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "kubectl-1.37.2",
+      "pname": "kubectl",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T06:42:18.114664Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.37.2",
+      "outputs_to_install": [
+        "man",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "convert": "/nix/store/9zb5vvdk4flxyg2badwmhg5xcx0wf8j0-kubectl-1.37.2-convert",
+        "man": "/nix/store/yxrqqa7dharmrn8jppi9kk98r8j6y0ml-kubectl-1.37.2-man",
+        "out": "/nix/store/y76mik4wh5sal2qkh3jilrbdn6vnj9i7-kubectl-1.37.2"
+      },
+      "system": "x86_64-linux",
       "group": "toplevel",
       "priority": 5
     },
@@ -125,6 +188,36 @@
       "priority": 5
     },
     {
+      "attr_path": "python313Packages.playwright",
+      "broken": false,
+      "derivation": "/nix/store/v7wl6pp4ahw7y8lg6m4jgdc5djpriszl-python3.13-playwright-1.64.0.drv",
+      "description": "Python version of the Playwright testing and automation library",
+      "install_id": "playwright",
+      "license": "Apache-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "python3.13-playwright-1.64.0",
+      "pname": "playwright",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T06:42:18.228302Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "1.64.0",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "dist": "/nix/store/v7lijwh3y0hb8s8mvfgjgdyiqz5iyk5a-python3.13-playwright-1.64.0-dist",
+        "out": "/nix/store/66cyvrryg2xlh676nckv8xbc5mhyq81b-python3.13-playwright-1.64.0"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
       "attr_path": "python313",
       "broken": false,
       "derivation": "/nix/store/zrvl3k815qvlfi543i8j5p8is9i4pdr8-python3-3.13.18.drv",
@@ -155,6 +248,38 @@
       "priority": 5
     },
     {
+      "attr_path": "python313",
+      "broken": false,
+      "derivation": "/nix/store/q79q88ydgk08hcsidmmkqixr1n8cyb45-python3-3.13.18.drv",
+      "description": "High-level dynamically-typed programming language",
+      "install_id": "python3",
+      "license": "Python-2.0",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "python3-3.13.18",
+      "pname": "python313",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T06:42:18.202533Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": false,
+      "version": "python3-3.13.18",
+      "outputs_to_install": [
+        "out",
+        "out",
+        "out"
+      ],
+      "outputs": {
+        "debug": "/nix/store/3crz79iss709wwk24iq5dr2hh5kmp5n7-python3-3.13.18-debug",
+        "out": "/nix/store/rm0rvb03awsc448vj2sifkynqjpz158x-python3-3.13.18"
+      },
+      "system": "x86_64-linux",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
       "attr_path": "terraform",
       "broken": false,
       "derivation": "/nix/store/irv02pr45n0r5njbxcfsq257848yv77f-terraform-1.17.1.drv",
@@ -180,6 +305,35 @@
         "out": "/nix/store/b6x2zyc515li00rsg16zxxayzri1npiy-terraform-1.17.1"
       },
       "system": "aarch64-darwin",
+      "group": "toplevel",
+      "priority": 5
+    },
+    {
+      "attr_path": "terraform",
+      "broken": false,
+      "derivation": "/nix/store/1cr63rsdvilncg6l6xmci5zh613kzirh-terraform-1.17.1.drv",
+      "description": "Tool for building, changing, and versioning infrastructure",
+      "install_id": "terraform",
+      "license": "BUSL-1.1",
+      "locked_url": "https://github.com/flox/nixpkgs?rev=177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "name": "terraform-1.17.1",
+      "pname": "terraform",
+      "rev": "177d0540942fb205af6993b1d5fa0b57799e09f8",
+      "rev_count": 1114946,
+      "rev_date": "2026-11-09T02:42:03Z",
+      "scrape_date": "2026-11-12T06:42:18.332958Z",
+      "stabilities": [
+        "unstable"
+      ],
+      "unfree": true,
+      "version": "1.17.1",
+      "outputs_to_install": [
+        "out"
+      ],
+      "outputs": {
+        "out": "/nix/store/s2d6g4dwyl9vfmyk682q7dcl112qngcn-terraform-1.17.1"
+      },
+      "system": "x86_64-linux",
       "group": "toplevel",
       "priority": 5
     }
