@@ -57,8 +57,34 @@ class FloxConfigTests(unittest.TestCase):
     def test_f1_complete_metadata_and_resolved_lockfile(self):
         metadata = json.loads((self.flox_dir / "env.json").read_text())
         self.assertEqual(metadata["version"], 1)
+        # F1: every declared tool/platform needs an actual catalog resolution,
+        # and the lock must describe the current manifest, not an older one.
+        # These manifest fields use simple quoted strings; read that subset
+        # without adding a TOML dependency to the Python 3.10 test suite.
+        manifest = self.manifest_file.read_text()
+        installs = {name: {"pkg-path": path} for name, path in re.findall(
+            r'^([\w-]+)\.pkg-path\s*=\s*"([^"\n]+)"\s*$', manifest, re.MULTILINE)}
+        required = {"python3", "playwright", "terraform", "google-cloud-sdk", "kubectl"}
+        self.assertTrue(required <= installs.keys(), "manifest omits required tools")
+        systems_match = re.search(r'^systems\s*=\s*(\[[^\]\n]*\])', manifest, re.MULTILINE)
+        self.assertIsNotNone(systems_match, "manifest must declare supported platforms")
+        systems = json.loads(systems_match.group(1))
+        self.assertTrue(systems, "manifest declares no supported platforms")
         lock = json.loads((self.flox_dir / "env/manifest.lock").read_text())
-        self.assertTrue(lock["packages"], "A manifest alone is not a resolved environment")
+        self.assertEqual(lock["manifest"]["install"], installs)
+        self.assertEqual(lock["manifest"]["options"]["systems"], systems)
+        records = {(p["install_id"], p["system"]): p for p in lock["packages"]}
+        self.assertEqual(len(records), len(lock["packages"]), "duplicate package resolutions")
+        self.assertEqual(set(records), {(name, system) for name in installs for system in systems})
+        for (name, system), package in records.items():
+            with self.subTest(tool=name, system=system):
+                self.assertEqual(package["attr_path"], installs[name]["pkg-path"])
+                self.assertRegex(package["version"], r'\d+\.\d+')
+                self.assertRegex(package["rev"], r'^[0-9a-f]{40}$')
+                self.assertRegex(package["derivation"], r'^/nix/store/[0-9a-z]{32}-.+\.drv$')
+                self.assertTrue(package["outputs_to_install"], "no installable outputs")
+                for output in package["outputs_to_install"]:
+                    self.assertRegex(package["outputs"][output], r'^/nix/store/[0-9a-z]{32}-.+')
 
     def test_f2_flox_gitignore_ignores_credentials_and_ephemeral_dirs(self):
         # F2: ordinary add-all cannot stage local credentials or runtime data.

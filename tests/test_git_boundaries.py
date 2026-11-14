@@ -9,7 +9,8 @@ rules) pin the tracking contract:
     trackable
   * CLI-11/10: the actual Git index ships only tool files and templates,
     not completed labs, state, or archive payloads
-  * cloned fixture launchers expose the public commands without cloud calls
+  * a clone of the candidate index exposes commands and required templates
+    without cloud calls
 
 No test requires a local lab or archive to exist.
 """
@@ -97,10 +98,17 @@ class ClonedLauncherSmokeTests(unittest.TestCase):
         self.workdir = Path(self._tmp.name)
 
     def test_cli11_cloned_fixture_launchers_expose_commands_and_templates(self):
-        # CLI-11/10: smoke-test fixture packaging, not real repository cleanliness.
-        source = make_git_repo(self.workdir)
-        run_git(source, "add", ".")
-        run_git(source, "commit", "-m", "candidate tool", "--no-verify")
+        # CLI-11/10: export staged blobs and modes, not working-tree copies.
+        # checkout-index writes only to the disposable source, without changing
+        # the real index, refs, or object database.
+        source = self.workdir / "candidate"
+        source.mkdir()
+        run_git(REPO_ROOT, "checkout-index", "--all", f"--prefix={source}/")
+        run_git(source, "init")
+        run_git(source, "add", "--force", ".")
+        run_git(source, "-c", "user.email=lab-tests@example.com",
+                "-c", "user.name=Lab Tests", "-c", "commit.gpgsign=false",
+                "commit", "-m", "candidate index", "--no-verify")
         clone = self.workdir / "clone"
         result = run_git(source, "clone", "--quiet", str(source), str(clone))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -121,18 +129,28 @@ class ClonedLauncherSmokeTests(unittest.TestCase):
         self.assertTrue((clone / "archives" / ".gitkeep").is_file())
         instructions = clone / "templates" / "new-terraform-lab" / "README.md"
         self.assertTrue(instructions.is_file())
-        # every template file the repository ships reaches a fresh
-        # clone, for all three lab types
-        shipped = {str(p.relative_to(REPO_ROOT / "templates"))
-                   for p in (REPO_ROOT / "templates").rglob("*")
-                   if p.is_file()}
+        # Required scaffold inputs must be tracked even when an omitted file
+        # still exists in the working tree. Also retain any additional staged
+        # template files in the clone.
+        required = {
+            "new-standard-lab/README.md", "new-standard-lab/task1.md",
+            "new-cli-lab/README.md", "new-cli-lab/task1.sh",
+            "new-terraform-lab/README.md", "new-terraform-lab/task1.tf",
+            "new-terraform-lab/backend.tf", "new-terraform-lab/providers.tf",
+            "new-terraform-lab/variables.tf",
+        }
+        shipped = {path.removeprefix("templates/")
+                   for path in run_git(REPO_ROOT, "ls-files", "--cached", "-z",
+                                       "--", "templates/").stdout.split("\0")
+                   if path}
         cloned = {str(p.relative_to(clone / "templates"))
                   for p in (clone / "templates").rglob("*")
                   if p.is_file()}
-        self.assertTrue(shipped, "no template files found to compare")
+        self.assertTrue(required <= cloned,
+                        f"candidate index omits required templates: {sorted(required - cloned)}")
         self.assertEqual(cloned, shipped,
-                         "the fresh clone's templates differ from the "
-                         "repository's")
+                          "the fresh clone's templates differ from the "
+                          "candidate index")
 
 
 if __name__ == "__main__":

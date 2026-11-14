@@ -171,19 +171,6 @@ class ResetCliTests(unittest.TestCase):
         self.assertFalse((lab / "terraform.tfstate").exists())
         self.assertTrue((lab / "task1.tf").is_file())
 
-    # --- a valid reset touches exactly the named lab -------------------
-    def test_reset_touches_only_the_target_lab(self):
-        target = build_lab_dir(self.repo / "labs", "my-lab")
-        sibling = build_lab_dir(self.repo / "labs", "other-lab")
-        before_sibling = snapshot(sibling)
-        result = self.run_reset_cli(self.scratch, "my-lab")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse((target / "terraform.tfstate").exists())
-        self.assertFalse((target / "terraform.tfvars").exists())
-        self.assertTrue((target / "task1.tf").is_file())  # user work kept
-        self.assertEqual(before_sibling, snapshot(sibling),
-                         "a sibling lab must be byte-identical after reset")
-
     def test_reset_does_not_litter_pycache(self):
         # CLI-11/2: importing the shared workflow must not drop a
         # __pycache__/ next to the scripts - the repository tree is

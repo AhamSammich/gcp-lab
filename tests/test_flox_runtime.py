@@ -38,7 +38,8 @@ class FloxRuntimeTests(unittest.TestCase):
                        XDG_CACHE_HOME=str(root / "c"), XDG_STATE_HOME=str(home / ".local/state"))
             script = r'''
 import json, os, pathlib, shutil, subprocess, sys
-assert sys.version_info[:2] == (3, 11), sys.version
+# F1: the accepted manifest selects python313 and its matching Playwright.
+assert sys.version_info[:2] == (3, 13), sys.version
 flox_bin = pathlib.Path(os.environ["FLOX_ENV"]) / "bin"
 assert pathlib.Path(sys.executable).resolve() == (flox_bin / "python3").resolve()
 os.environ["CLOUDSDK_CORE_DISABLE_USAGE_REPORTING"] = "true"

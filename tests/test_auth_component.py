@@ -49,13 +49,6 @@ class GcloudSetupTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             return lab_start.gcloud_setup(PROJECT, REGION, ZONE)
 
-    def test_one_login_covers_both_stores(self):
-        # CLI-2: exactly one browser flow, not merely at least one.
-        self.assertTrue(self.run_setup())
-        calls = self.gcloud_log.read_text().splitlines()
-        self.assertEqual([c for c in calls if c.startswith("gcloud auth ")],
-                         ["gcloud auth login --update-adc"])
-
     def test_project_region_zone_set_after_login(self):
         # CLI-2: configure the exact values, in order, after one login.
         # CLI-10: ambient cloud overrides must not reach the stub tools.

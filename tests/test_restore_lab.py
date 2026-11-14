@@ -581,8 +581,10 @@ class RestoreRefusalTests(unittest.TestCase):
         for label, zip_path, error in cases:
             with self.subTest(label=label):
                 dest = self.root / ("dest-" + zip_path.stem)
-                with self.assertRaises(error):
-                    preservation.restore_archive(zip_path, dest)
+                with mock.patch.object(os, "mkdir", wraps=os.mkdir) as mkdir:
+                    with self.assertRaises(error):
+                        preservation.restore_archive(zip_path, dest)
+                    mkdir.assert_not_called()
                 self.assertFalse(os.path.lexists(dest))
         # nothing escaped anywhere above the refused destinations
         self.assertFalse(list(self.root.glob("esc*")))

@@ -376,12 +376,16 @@ class TaskTitleSafetyTests(unittest.TestCase):
         self.assertNotIn("__TASK_", (lab / "task2.tf").read_text())
 
     def test_hostile_title_stays_comment_only_in_sh_stub(self):
+        # AC7/AC10: sanitize the supplied label, never silently discard it.
         lab = self.scaffold("cli", [{"n": 1, "title": self.HOSTILE_TITLE}])
         stub = lab / "task1.sh"
         self.assertEqual(noncomment_lines(stub), [],
                          "a page title broke out of the .sh comment stub")
         heading = stub.read_text().splitlines()[1]
         self.assertTrue(heading.startswith("# Task 1"), heading)
+        collapsed = " ".join(self.HOSTILE_TITLE.split())
+        self.assertIn(collapsed, heading)
+        self.assertEqual(stub.read_text().count(collapsed), 1)
 
     def test_stub_is_exactly_the_exemplar_with_markers_filled(self):
         # AC10: the stub is the shipped exemplar - nothing added,
