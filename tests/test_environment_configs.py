@@ -1,8 +1,9 @@
-"""Static safeguards only; runtime evidence lives in test_devcontainer_runtime.py."""
+"""Configuration and Git safeguards; environment runtime tests are separate."""
 
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -12,7 +13,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
-from util import REPO_ROOT
+from util import REPO_ROOT, run_git
 
 
 class DevContainerConfigTests(unittest.TestCase):
@@ -60,11 +61,26 @@ class FloxConfigTests(unittest.TestCase):
         self.assertTrue(lock["packages"], "A manifest alone is not a resolved environment")
 
     def test_f2_flox_gitignore_ignores_credentials_and_ephemeral_dirs(self):
-        self.assertTrue(self.gitignore_file.is_file(),
-                        ".flox/.gitignore must exist")
-        content = self.gitignore_file.read_text(encoding="utf-8")
-        for entry in ("run/", "cache/", "credentials/"):
-            self.assertIn(entry, content, f".flox/.gitignore must ignore {entry}")
+        # F2: ordinary add-all cannot stage local credentials or runtime data.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            flox = repo / ".flox"
+            flox.mkdir()
+            (flox / ".gitignore").write_bytes(self.gitignore_file.read_bytes())
+            for directory in ("credentials", "run", "cache"):
+                nested = flox / directory / "nested"
+                nested.mkdir(parents=True)
+                (nested.parent / "application_default_credentials.json").write_text(
+                    '{"token": "synthetic"}\n')
+                (nested / "synthetic.json").write_text('{"token": "synthetic"}\n')
+            manifest = flox / "env" / "manifest.toml"
+            manifest.parent.mkdir()
+            manifest.write_text("version = 1\n")
+            run_git(repo, "init")
+            run_git(repo, "add", "-A")
+            staged = set(run_git(repo, "ls-files", "--cached", "-z")
+                         .stdout.split("\0")) - {""}
+            self.assertEqual(staged, {".flox/.gitignore", ".flox/env/manifest.toml"})
 
 
 class EnvironmentDocsTests(unittest.TestCase):

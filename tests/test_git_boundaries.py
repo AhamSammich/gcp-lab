@@ -7,9 +7,9 @@ rules) pin the tracking contract:
     - `git add -A` can never stage user lab work or an archive
   * the tracked placeholders (labs/.gitkeep, archives/.gitkeep) stay
     trackable
-  * CLI-11/10: a fresh clone of a committed candidate fixture is a tool: the
-    target layout with both template directories, no completed-lab
-    trees, no archive payloads, no flat scaffold dir
+  * CLI-11/10: the actual Git index ships only tool files and templates,
+    not completed labs, state, or archive payloads
+  * cloned fixture launchers expose the public commands without cloud calls
 
 No test requires a local lab or archive to exist.
 """
@@ -65,30 +65,45 @@ class IgnoreRuleTests(unittest.TestCase):
         self.assertIn("A  archives/.gitkeep", status)
 
 
-class FreshCloneTests(unittest.TestCase):
+class TrackedRepositoryTests(unittest.TestCase):
+    def test_cli11_tracked_candidate_is_scaffolding_only(self):
+        # CLI-11/10: inspect the actual index, not make_repo's curated tree.
+        # Local ignored/untracked labs are permitted and are not clone contents.
+        tracked = set(run_git(REPO_ROOT, "ls-files", "--cached", "-z")
+                      .stdout.split("\0")) - {""}
+        allowed_roots = {".devcontainer", ".flox", ".gitignore", ".plans",
+                         "AGENTS.md", "README.md", "labkit", "labkit_cli",
+                         "templates", "labs", "archives", "tests", "scripts"}
+        unexpected = {path for path in tracked
+                      if Path(path).parts[0] not in allowed_roots}
+        self.assertEqual(unexpected, set(), sorted(unexpected))
+        for collection in ("labs", "archives"):
+            with self.subTest(collection=collection):
+                self.assertEqual({path for path in tracked
+                                  if path.startswith(collection + "/")},
+                                 {f"{collection}/.gitkeep"})
+        stray_terraform = {path for path in tracked
+                           if path.endswith(".tf") and not path.startswith("templates/")}
+        self.assertEqual(stray_terraform, set(), sorted(stray_terraform))
+        local_state = {path for path in tracked
+                       if ".tfstate" in Path(path).name or ".tfvars" in Path(path).name}
+        self.assertEqual(local_state, set(), sorted(local_state))
+
+
+class ClonedLauncherSmokeTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.workdir = Path(self._tmp.name)
 
-    def test_fresh_clone_is_scaffolding_only(self):
-        # CLI-11/10: candidate files only, not evidence about real checkout HEAD.
+    def test_cli11_cloned_fixture_launchers_expose_commands_and_templates(self):
+        # CLI-11/10: smoke-test fixture packaging, not real repository cleanliness.
         source = make_git_repo(self.workdir)
         run_git(source, "add", ".")
         run_git(source, "commit", "-m", "candidate tool", "--no-verify")
         clone = self.workdir / "clone"
         result = run_git(source, "clone", "--quiet", str(source), str(clone))
         self.assertEqual(result.returncode, 0, result.stderr)
-        # the root carries the tool only - no completed-lab trees.
-        # The final executable and its package, with no legacy launchers.
-        allowed = {".git", ".gitignore", ".plans", "AGENTS.md", "README.md",
-                   "labkit", "labkit_cli", "templates", "labs", "archives",
-                   "tests", "scripts"}
-        top = {p.name for p in clone.iterdir()}
-        self.assertEqual(top - allowed, set(), sorted(top - allowed))
-        self.assertIn("labkit", top)
-        for obsolete in ("cloud-lab", "lab-start", "lab-reset"):
-            self.assertNotIn(obsolete, top)
         env = stub_env(self.workdir / "home", self.workdir / "gcloud.log")
         # RESTORE-1/3: a fresh clone exposes restore through the sole CLI.
         for args in (("--help",), ("start", "--help"),
@@ -104,9 +119,6 @@ class FreshCloneTests(unittest.TestCase):
         # managed dirs exist via their tracked placeholders
         self.assertTrue((clone / "labs" / ".gitkeep").is_file())
         self.assertTrue((clone / "archives" / ".gitkeep").is_file())
-        self.assertEqual({p.name for p in (clone / "labs").iterdir()}, {".gitkeep"})
-        self.assertEqual({p.name for p in (clone / "archives").iterdir()}, {".gitkeep"})
-        self.assertFalse((clone / "scripts" / "restore_lab.py").exists())
         instructions = clone / "templates" / "new-terraform-lab" / "README.md"
         self.assertTrue(instructions.is_file())
         # every template file the repository ships reaches a fresh
@@ -121,12 +133,6 @@ class FreshCloneTests(unittest.TestCase):
         self.assertEqual(cloned, shipped,
                          "the fresh clone's templates differ from the "
                          "repository's")
-        # the flat scaffold dir is gone
-        self.assertFalse((clone / "terraform-lab-scaffold").exists())
-        # no terraform anywhere outside templates/
-        stray_tf = [str(p) for p in clone.rglob("*.tf")
-                    if "templates" not in p.parts]
-        self.assertEqual(stray_tf, [])
 
 
 if __name__ == "__main__":

@@ -63,11 +63,12 @@ class TypeSelectionCliTests(unittest.TestCase):
         """A terraform binary on the stub PATH that logs and exits
         `status`. Failing on purpose: for the never-invoked
         assertions an accidental run must be loud, and for the init
-        tests the logged command line is the evidence."""
+        tests the logged command line and working directory are the evidence."""
         script = self.home / "bin" / "terraform"
         script.write_text(
             "#!/bin/sh\n"
             f'echo "terraform $*" >> {shlex.quote(str(self.workdir / "terraform.log"))}\n'
+            f'pwd -P >> {shlex.quote(str(self.workdir / "terraform-cwd.log"))}\n'
             f"exit {status}\n"
         )
         script.chmod(0o755)
@@ -75,6 +76,10 @@ class TypeSelectionCliTests(unittest.TestCase):
     def terraform_invocations(self):
         log = self.workdir / "terraform.log"
         return log.read_text().strip() if log.exists() else ""
+
+    def terraform_working_directories(self):
+        log = self.workdir / "terraform-cwd.log"
+        return [Path(line) for line in log.read_text().splitlines()]
 
     # --- AC10: explicit selection generates the type's contents ------
     def test_explicit_standard_generates_markdown_lab(self):
@@ -198,7 +203,7 @@ class TypeSelectionCliTests(unittest.TestCase):
 
     # --- AC11: initialization is Terraform-only -------------------------
     def test_terraform_init_runs_when_a_binary_is_available(self):
-        # AC11: the Terraform type runs terraform init and reports it
+        # AC11: initialize the selected lab, not the caller or repository root.
         self.fake_terraform(0)
         result = self.run_start("", "init-lab", "--yes",
                                  "--type", "terraform",
@@ -206,11 +211,13 @@ class TypeSelectionCliTests(unittest.TestCase):
                                  "--project", "qwiklabs-gcp-01-newlab",
                                  "--zone", "us-central1-a", "--skip-auth")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("terraform init", self.terraform_invocations())
+        self.assertEqual(self.terraform_invocations(), "terraform init")
+        self.assertEqual(self.terraform_working_directories(),
+                         [self.repo / "labs" / "init-lab"])
         self.assertIn("terraform: initialized", result.stdout)
 
     def test_terraform_init_failure_is_reported(self):
-        # AC11: a failing init is reported, not hidden
+        # AC11: a failing init in the selected lab is reported, not hidden.
         self.fake_terraform(1)
         result = self.run_start("", "failinit-lab", "--yes",
                                 "--type", "terraform",
@@ -218,7 +225,9 @@ class TypeSelectionCliTests(unittest.TestCase):
                                 "--project", "qwiklabs-gcp-01-newlab",
                                 "--zone", "us-central1-a", "--skip-auth")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("terraform init", self.terraform_invocations())
+        self.assertEqual(self.terraform_invocations(), "terraform init")
+        self.assertEqual(self.terraform_working_directories(),
+                         [self.repo / "labs" / "failinit-lab"])
         self.assertIn("terraform: failed", result.stdout)
         # the lab itself was still scaffolded
         self.assertTrue((self.repo / "labs" / "failinit-lab" / "task1.tf").is_file())
@@ -377,16 +386,14 @@ class TaskTitleSafetyTests(unittest.TestCase):
     def test_stub_is_exactly_the_exemplar_with_markers_filled(self):
         # AC10: the stub is the shipped exemplar - nothing added,
         # nothing removed - with only its number and title markers
-        # substituted (the title slot is extracted from the stub's own
-        # heading, so this pins structure, not prose)
+        # substituted, including the supplied task title.
         lab = self.scaffold("standard", [{"n": 1, "title": "Deploy a network"}])
         stub = (lab / "task1.md").read_text()
+        self.assertIn("# Task 1: Deploy a network", stub)
         exemplar = (self.repo / "templates" / "new-standard-lab"
                     / "task1.md").read_text()
-        heading = stub.splitlines()[0]
-        title = heading.split(": ", 1)[1]
         expected = (exemplar.replace("__TASK_N__", "1")
-                    .replace("__TASK_TITLE__", title))
+                    .replace("__TASK_TITLE__", "Deploy a network"))
         self.assertEqual(stub, expected)
 
 

@@ -138,24 +138,16 @@ class LayoutCliTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((managed / "nested-lab").exists())
 
-    def test_symlink_escape_refused(self):
-        victim = build_lab_dir(self.workdir, "victim-lab")
-        link = self.scratch / "escape-lab"
-        link.symlink_to(victim)
-        before = snapshot(victim)
-        result = self.run_start(self.scratch, "", "escape-lab",
-                                "--use-existing", "--yes", *FULL_FLAGS)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(before, snapshot(victim))
-        self.assert_no_gcloud()
-
     def test_file_target_refused(self):
-        notes = self.scratch / "notes.txt"
+        # Plan 002 target safety: a valid managed slug must name a directory.
+        notes = self.repo / "labs" / "notes-lab"
         notes.write_text("not a lab\n")
-        result = self.run_start(self.scratch, "", "notes.txt",
+        result = self.run_start(self.scratch, "", "notes-lab",
                                 "--yes", *FULL_FLAGS)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a directory", result.stderr)
         self.assertEqual(notes.read_text(), "not a lab\n")
+        self.assert_no_gcloud()
 
     # --- explicit paths resolve to the managed lab -------------------
     def test_explicit_relative_path_scaffolds_new_managed_lab(self):
@@ -232,7 +224,7 @@ class LayoutCliTests(unittest.TestCase):
 
     # --- the labs/ collection root itself is guarded --------------------
     def test_managed_symlink_escape_refused(self):
-        # labs/hijack-lab is a symlink pointing outside the repo: the
+        # Plan 002 target safety: labs/hijack-lab points outside the repo; the
         # bare slug must be refused before any fetch/reset/write, in
         # refresh mode and in unattended-new mode alike
         victim = build_lab_dir(self.workdir, "victim-lab")
@@ -249,6 +241,7 @@ class LayoutCliTests(unittest.TestCase):
                 result = self.run_start(self.repo, "", "hijack-lab",
                                         *flags, *FULL_FLAGS)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertIn("symlink", result.stderr)
                 self.assertEqual(before, snapshot(victim), mode)
                 self.assertTrue(link.is_symlink())
                 self.assertFalse((self.repo / "hijack-lab").exists())

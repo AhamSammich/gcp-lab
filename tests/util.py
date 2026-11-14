@@ -391,9 +391,9 @@ def make_repo(parent: Path) -> Path:
     implementation package it imports, the REAL template trees for
     all three lab types (copied file for file from the actual
     repository - no flat-scaffold fallback, no synthesized
-    stand-ins: the fixture exercises exactly what a fresh clone
-    ships), and managed labs/ + archives/ with tracked
-    placeholders.
+    stand-ins), and empty managed labs/ + archives/ collections.
+    This is a curated execution fixture, not evidence of repository
+    cleanliness; test_git_boundaries checks the actual Git index.
     """
     repo = (parent / "repo").resolve()  # real path: matches the way
     repo.mkdir()                        # labkit anchors REPO_ROOT

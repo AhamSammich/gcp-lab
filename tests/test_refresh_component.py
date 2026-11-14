@@ -62,7 +62,8 @@ class RefreshComponentTests(unittest.TestCase):
         created = self.lab_start.scaffold(
             self.lab, "terraform", "Landing Zone Challenge",
             "https://example.com/lab",
-            None, 4, [{"n": 1, "title": "Set up"}],
+            None, 4, [{"n": 1, "title": "Set up"},
+                      {"n": 3, "title": "Configure firewall rules"}],
             NEW_PROJECT, "us-central1", "us-central1-a",
             extras=[{"name": "bucket_name", "description": "lab bucket",
                      "value": "bkt"}],
@@ -82,19 +83,16 @@ class RefreshComponentTests(unittest.TestCase):
                              f"{name} must survive a refresh untouched")
 
     def test_missing_task_stub_created(self):
+        # AC10/AC12: refresh fills a missing stub with the supplied task title.
         (self.lab / "task3.tf").unlink()
         created = self.refresh()
         task3 = self.lab / "task3.tf"
         self.assertTrue(task3.exists())
-        # the stub is the shipped exemplar with only its number and
-        # title markers filled (the title slot is read back out of
-        # the stub's own heading, so this pins structure, not prose)
+        self.assertIn("# Task 3: Configure firewall rules", task3.read_text())
+        # The expected title comes from the input, never the generated output.
         exemplar = (self.template / "task1.tf").read_text()
-        heading = task3.read_text().splitlines()[1]
-        self.assertTrue(heading.startswith("# Task 3"), heading)
-        title = heading.split(": ", 1)[1]
         expected = (exemplar.replace("__TASK_N__", "3")
-                    .replace("__TASK_TITLE__", title))
+                    .replace("__TASK_TITLE__", "Configure firewall rules"))
         self.assertEqual(task3.read_text(), expected)
         self.assertIn(task3, created)
 

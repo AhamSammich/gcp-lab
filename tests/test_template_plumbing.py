@@ -33,7 +33,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from util import (FULL_FLAGS, REPO_ROOT, build_lab_dir, load_lab_start,
+from util import (FULL_FLAGS, REPO_ROOT, build_lab_dir,
                   make_repo, noncomment_lines, run_cli, snapshot, stub_env)
 
 EXPECTED_TFVARS = (
@@ -41,6 +41,14 @@ EXPECTED_TFVARS = (
     'project_id     = "qwiklabs-gcp-01-newlab"\n'
     'compute_region = "us-central1"\n'
     'compute_zone   = "us-central1-a"\n'
+)
+
+EXPECTED_FALLBACK_SECTIONS = (
+    "## Overview\n\n"
+    "<!-- Add lab overview -->\n\n"
+    "<!-- Include any images if applicable -->\n\n"
+    "## Objectives\n\n"
+    "<!-- Add list of objectives -->\n"
 )
 
 STANDARD_TEMPLATE = REPO_ROOT / "templates" / "new-standard-lab"
@@ -52,9 +60,6 @@ class TemplateBehaviorTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.repo = make_repo(self.root)
-
-    def load(self):
-        return load_lab_start(self.repo)
 
     # --- the type selector is public ----------------------------------
     def test_help_offers_the_type_selector(self):
@@ -150,7 +155,6 @@ class TemplateBehaviorTests(unittest.TestCase):
         # template, rendered - byte parity for the verbatim files, a
         # fully substituted README, task stubs that are the shipped
         # exemplar with only its number and title markers filled
-        mod = self.load()
         env = stub_env(self.root / "home", self.root / "gcloud.log")
         # HANG-1: close input so the optional URL prompt cannot inherit open stdin.
         result = subprocess.run(
@@ -169,9 +173,9 @@ class TemplateBehaviorTests(unittest.TestCase):
         # three placeholders substituted - nothing more, nothing less
         expected_readme = (template / "README.md").read_text()
         for placeholder, value in (
-            (mod.README_PLACEHOLDERS["title"], "Landing Zone Challenge"),
-            (mod.README_PLACEHOLDERS["url"], "<!-- Add lab URL -->"),
-            (mod.README_PLACEHOLDERS["sections"], mod.FALLBACK_SECTIONS),
+            ("__LAB_TITLE__", "Landing Zone Challenge"),
+            ("__LAB_URL__", "<!-- Add lab URL -->"),
+            ("__LAB_SECTIONS__", EXPECTED_FALLBACK_SECTIONS),
         ):
             expected_readme = expected_readme.replace(placeholder, value)
         readme = (lab / "README.md").read_text()
@@ -180,17 +184,13 @@ class TemplateBehaviorTests(unittest.TestCase):
         self.assertNotIn("__LAB_", readme)  # every placeholder filled
         self.assertEqual((lab / "terraform.tfvars").read_text(), EXPECTED_TFVARS)
         # the task stubs are the shipped exemplar with only its
-        # __TASK_N__ / __TASK_TITLE__ markers substituted (the title
-        # slot is read back out of the stub's own heading, so this
-        # pins structure, not prose)
+        # __TASK_N__ / __TASK_TITLE__ markers substituted. AC7: without
+        # page titles, ask for manual preparation rather than inventing one.
         exemplar = (template / "task1.tf").read_text()
         for n in range(1, 5):
             stub = (lab / f"task{n}.tf").read_text()
-            heading = stub.splitlines()[1]
-            self.assertTrue(heading.startswith(f"# Task {n}"), heading)
-            title = heading.split(": ", 1)[1]
             expected = (exemplar.replace("__TASK_N__", str(n))
-                        .replace("__TASK_TITLE__", title))
+                        .replace("__TASK_TITLE__", "add this task's title from the lab page"))
             self.assertEqual(stub, expected, f"task{n}.tf")
             self.assertEqual(noncomment_lines(lab / f"task{n}.tf"), [],
                              f"task{n}.tf ships runnable configuration")
